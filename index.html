@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+  content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0908">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Second Harvest</title>
+<style>
+  :root { color-scheme: dark; --ink: #f0e2c8; --dim: #6b5b4a; --amber: #d99a3f; --bark: #241c17; }
+
+  html, body {
+    margin: 0; height: 100%; background: #0b0908; color: var(--ink);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    overflow: hidden; overscroll-behavior: none;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none; -webkit-user-select: none;
+  }
+  body { display: grid; place-items: center; touch-action: none; }
+
+  canvas { display: block; box-shadow: 0 0 60px #00000099; }
+
+  #boot { color: var(--dim); font-size: 13px; letter-spacing: .1em; }
+
+  /* --- touch controls ---------------------------------------------------- */
+  /* Positioned from JS into whichever slack the letterbox leaves: the side
+     gutters on a wide phone, a bottom band on a boxier screen, and failing both,
+     a translucent overlay in the canvas corners. */
+  .touch-controls { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+  .touch-pad, .touch-buttons { position: fixed; pointer-events: auto; touch-action: none; }
+  .touch-pad { display: grid; grid-template: repeat(3, var(--key)) / repeat(3, var(--key)); }
+  .touch-buttons { display: flex; gap: 10px; }
+
+  .touch-controls { --key: clamp(38px, 8.5vh, 58px); }
+
+  .touch-key {
+    display: grid; place-items: center; gap: 0;
+    width: var(--key); height: var(--key);
+    margin: 0; padding: 0;
+    font: inherit; font-size: calc(var(--key) * 0.34);
+    color: var(--amber);
+    background: #1a1512cc;
+    border: 2px solid #4a3728;
+    border-radius: 10px;
+    backdrop-filter: blur(2px);
+    transition: background .06s linear, transform .06s linear;
+  }
+  .touch-key--round {
+    width: calc(var(--key) * 1.25); height: calc(var(--key) * 1.25);
+    border-radius: 50%;
+  }
+  .touch-key em {
+    font-style: normal; font-size: calc(var(--key) * 0.19);
+    color: var(--dim); letter-spacing: .04em; margin-top: 1px;
+  }
+  /* When there is no slack the clusters sit on top of the game, so lighten them. */
+  .touch-controls.is-overlay .touch-key { opacity: .72; }
+  .touch-controls.is-overlay .touch-key.is-down { opacity: 1; }
+
+  .touch-key.is-down { background: #d99a3f; color: #14100e; transform: scale(.94); }
+  .touch-key.is-down em { color: #3a2c1a; }
+
+  /* --- portrait ---------------------------------------------------------- */
+  /* 960x540 of small type does not survive a portrait phone. Say so plainly. */
+  #rotate {
+    display: none; position: fixed; inset: 0; z-index: 20;
+    background: #0b0908; place-items: center; text-align: center; padding: 24px;
+  }
+  #rotate p { max-width: 22ch; line-height: 1.6; font-size: 15px; color: var(--ink); }
+  #rotate small { display: block; margin-top: 14px; color: var(--dim); font-size: 12px; }
+  #rotate .glyph {
+    font-size: 44px; color: var(--amber); margin-bottom: 18px;
+    animation: tip 2.4s ease-in-out infinite;
+  }
+  @keyframes tip { 0%, 60%, 100% { transform: rotate(0deg); } 30% { transform: rotate(-90deg); } }
+
+  body.is-portrait #rotate { display: grid; }
+  body.is-portrait .touch-controls { display: none; }
+</style>
+</head>
+<body>
+  <div id="boot">reading rings…</div>
+  <div id="rotate" role="status">
+    <div>
+      <div class="glyph">▭</div>
+      <p>Turn your device sideways.</p>
+      <small>Second Harvest reads a lot of small type. It needs the long edge.</small>
+    </div>
+  </div>
+  <script type="module">
+    import { boot } from './src/main.js';
+    boot(document.getElementById('boot')).catch((err) => {
+      const el = document.getElementById('boot');
+      if (el) el.textContent = 'failed to start: ' + err.message;
+      console.error(err);
+    });
+  </script>
+</body>
+</html>

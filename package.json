@@ -1,0 +1,12 @@
+{
+  "name": "second-harvest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Second Harvest — a JRPG vertical slice. Zero dependencies.",
+  "type": "module",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=20" }
+}
