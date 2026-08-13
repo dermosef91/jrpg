@@ -56,6 +56,32 @@ const shot = async (page, name) => {
   await page.waitForTimeout(200);
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
+/**
+ * Wait for the cold open's first narration to be part way through typing, then
+ * count how many pixels on the canvas are not black. Text over a full blackout
+ * is the only thing that can be lit at that moment, so a near-zero count means
+ * the blackout is being painted over the words.
+ */
+const litPixelsDuringNarration = async (page) => {
+  for (let i = 0; i < 120; i++) {
+    const lit = await page.evaluate(() => {
+      const t = window.__game.scenes.top;
+      if (t?.constructor?.name !== 'Director') return null;
+      if (t.fade !== 1 || !t.step?.narrate || t.reveal < 12) return null;
+      const c = document.querySelector('canvas');
+      const px = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let p = 0; p < px.length; p += 4) {
+        if (px[p] > 60 || px[p + 1] > 60 || px[p + 2] > 60) n++;
+      }
+      return n;
+    });
+    if (lit !== null) return lit;
+    await page.waitForTimeout(50);
+  }
+  return null;
+};
+
 /** Advance whatever cutscene is on top until the player has the field back. */
 const skipScript = async (page, budget = 160) => {
   let lines = 0;
@@ -87,6 +113,25 @@ console.log('\nscenes');
 
   await page.keyboard.press('Enter');
   await page.waitForTimeout(900);
+  // The cold open: the screen must go black in one step (no frame of the world
+  // slipping out first), and the narration must be visible ON the black rather
+  // than painted underneath it.
+  const cold = await page.evaluate(() => {
+    const g = window.__game;
+    const t = g.scenes.top;
+    return { scene: t?.constructor?.name, fade: t?.fade, map: g.field?.mapId };
+  });
+  if (cold.scene !== 'Director') fail('cold open', `expected Director, got ${cold.scene}`);
+  else if (cold.fade !== 1) fail('cold open', `screen only ${cold.fade} black -- the world flickers`);
+  else if (cold.map !== 'quietstair') fail('cold open', `field built on ${cold.map}`);
+  else ok('cold open blacks the screen in one step');
+
+  const lit = await litPixelsDuringNarration(page);
+  if (lit === null) fail('cold open', 'the opening narration never appeared');
+  else if (lit < 200) fail('cold open', `narration drawn under the blackout (${lit} lit pixels)`);
+  else ok(`opening narration reads over the blackout (${lit} lit pixels)`);
+  await shot(page, '01b-cold-open');
+
   const opened = await skipScript(page);
   if (!opened.reached) fail('title', `never reached the field, stuck in ${opened.scene}`);
   else ok(`title -> opening -> field (${opened.lines} scripted lines)`);

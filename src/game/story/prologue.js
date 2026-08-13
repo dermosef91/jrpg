@@ -9,9 +9,9 @@
 export const OPENING = [
   { fade: 'out', time: 0.01 },
   { mood: null },
-  { wait: 0.6 },
+  { wait: 0.35 },
   { sfx: 'bell' },
-  { wait: 1.1 },
+  { wait: 0.9 },
   { narrate: 'A Warden went down the Quiet Stair to read the writ on a seam of inlay that had gone cold.' },
   { narrate: 'That was four days ago.' },
   { sfx: 'bell' },

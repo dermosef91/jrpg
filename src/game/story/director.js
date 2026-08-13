@@ -43,6 +43,7 @@ export class Director extends Scene {
     this.fadeRate = 1;
     this.t = 0;
     this.blockedOnBattle = false;
+    this.tolls = [];
   }
 
   enter() { this.#next(); }
@@ -67,6 +68,10 @@ export class Director extends Scene {
   #begin(step) {
     const game = this.game;
     if (step.sfx) this.audio?.play(step.sfx);
+    // A bell rung over a black screen has to be visible as well as audible --
+    // the opening is nearly two seconds of dark, and a player with the sound
+    // off should still see something happen.
+    if (step.sfx === 'bell') this.tolls.push({ age: 0 });
     if (step.mood !== undefined) this.audio?.setMood(step.mood);
     if (step.shake) {
       game.renderer.shakeX = (Math.random() - 0.5) * step.shake * 2;
@@ -80,8 +85,17 @@ export class Director extends Scene {
     if (step.walk && this.field) this.field.scriptWalk(step.walk);
     if (step.fade) {
       this.fadeTo = step.fade === 'out' ? 1 : 0;
-      this.fadeRate = 1 / Math.max(0.05, step.time ?? 0.5);
-      if (step.fade === 'out' && this.fade === 0) this.fade = 0.001;
+      const time = step.time ?? 0.5;
+      // A fade short enough to be a cut is a cut. Ramping it over a clamped
+      // minimum leaves a few frames of whatever the script was about to
+      // replace, which reads as a flicker.
+      if (time < 0.06) {
+        this.fade = this.fadeTo;
+        this.fadeRate = 1;
+      } else {
+        this.fadeRate = 1 / time;
+        if (step.fade === 'out' && this.fade === 0) this.fade = 0.001;
+      }
     }
     if (step.goTo) {
       game.goToMap(step.goTo.map, step.goTo.spawn);
@@ -105,6 +119,10 @@ export class Director extends Scene {
 
   update(dt) {
     this.t += dt;
+    for (let i = this.tolls.length - 1; i >= 0; i--) {
+      this.tolls[i].age += dt;
+      if (this.tolls[i].age > 2.4) this.tolls.splice(i, 1);
+    }
     const g = this.game;
     g.renderer.shakeX *= 0.86;
     g.renderer.shakeY *= 0.86;
@@ -172,11 +190,31 @@ export class Director extends Scene {
   // --- draw ----------------------------------------------------------------
 
   draw(r) {
+    // The blackout covers the world, never the cutscene's own text. Drawn the
+    // other way round, everything said over black -- which is the whole cold
+    // open -- renders underneath an opaque rect and is simply never seen.
+    if (this.fade > 0) r.rect(0, 0, r.W, r.H, alpha(P.void, this.fade));
+    this.#drawTolls(r);
     const step = this.step;
     if (step?.narrate) this.#drawNarration(r, step);
     else if (step?.say) this.#drawLine(r, step);
     if (step?.teach) this.#drawTeach(r, step.teach);
-    if (this.fade > 0) r.rect(0, 0, r.W, r.H, alpha(P.void, this.fade));
+  }
+
+  /** The sound of a bell, drawn. Rings widen and thin out from the middle of
+   *  the screen, which is the only thing on it during the cold open. */
+  #drawTolls(r) {
+    for (const toll of this.tolls) {
+      const k = toll.age / 2.4;
+      const fade = (1 - k) ** 1.6;
+      if (fade <= 0.02) continue;
+      const radius = 6 + k * 150;
+      r.circle(r.W / 2, r.H / 2 - 6, Math.round(radius), alpha(P.ember, fade * 0.5),
+        { fill: false });
+      r.circle(r.W / 2, r.H / 2 - 6, Math.round(radius * 0.72),
+        alpha(P.emberDeep, fade * 0.32), { fill: false });
+      if (k < 0.3) r.glow(r.W / 2, r.H / 2 - 6, Math.round(9 * (1 - k / 0.3)), P.emberHot, 0.6);
+    }
   }
 
   #drawLine(r, step) {

@@ -107,7 +107,10 @@ class Game {
   enterWorld() {
     import('./game/explore/explore-scene.js').then(({ ExploreScene }) => {
       this.ExploreScene = ExploreScene;
-      this.field = this.scenes.replace(new ExploreScene({ mapId: 'rootplaza' }));
+      // Built on the map the prologue actually opens on. If a frame ever does
+      // slip out before the cold open blacks the screen, it should at least be
+      // a frame of the right place.
+      this.field = this.scenes.replace(new ExploreScene({ mapId: 'quietstair' }));
       this.runScript(OPENING);
     });
   }
