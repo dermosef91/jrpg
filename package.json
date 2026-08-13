@@ -1,8 +1,8 @@
 {
-  "name": "second-harvest",
+  "name": "emberroot",
   "version": "0.1.0",
   "private": true,
-  "description": "Second Harvest — a JRPG vertical slice. Zero dependencies.",
+  "description": "EMBERROOT — a pixel-art JRPG. No assets: every pixel drawn, every sound synthesised.",
   "type": "module",
   "scripts": {
     "start": "node tools/serve.mjs",

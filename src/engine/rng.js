@@ -1,5 +1,3 @@
-// Seeded RNG. Determinism matters here: ring cores must regenerate identically
-// so an audit can be re-read, and so tests can assert on generated series.
 export function makeRng(seed = 1) {
   let a = seed >>> 0;
   const next = () => {
@@ -14,12 +12,7 @@ export function makeRng(seed = 1) {
     range: (lo, hi) => lo + next() * (hi - lo),
     int: (lo, hi) => Math.floor(lo + next() * (hi - lo + 1)),
     pick: (arr) => arr[Math.floor(next() * arr.length)],
-    // Box-Muller. Ring chemistry is noisy in a gaussian way, which is the
-    // whole forensic premise -- edits read as suspiciously low variance.
-    normal: (mean = 0, sd = 1) => {
-      const u = Math.max(next(), 1e-9);
-      return mean + sd * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * next());
-    },
+    chance: (p) => next() < p,
   };
 }
 

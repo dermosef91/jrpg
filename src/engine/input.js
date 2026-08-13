@@ -1,5 +1,3 @@
-// Edge-triggered input. Scenes ask "was this pressed since the last update",
-// never "is it held", except for movement.
 const BINDINGS = {
   ArrowUp: 'up', KeyW: 'up',
   ArrowDown: 'down', KeyS: 'down',
@@ -7,7 +5,8 @@ const BINDINGS = {
   ArrowRight: 'right', KeyD: 'right',
   Enter: 'confirm', Space: 'confirm', KeyZ: 'confirm',
   Escape: 'cancel', KeyX: 'cancel', Backspace: 'cancel',
-  Tab: 'detail', KeyE: 'detail',
+  Tab: 'menu', KeyC: 'menu',
+  KeyQ: 'pageLeft', KeyE: 'pageRight',
   KeyM: 'mute',
 };
 
@@ -15,7 +14,8 @@ export class Input {
   #held = new Set();
   #pressed = new Set();
   #consumed = new Set();
-  #deferredRelease = new Set();
+  #deferred = new Set();
+  #repeat = new Map();
 
   attach(target = window) {
     target.addEventListener('keydown', (e) => {
@@ -30,47 +30,59 @@ export class Input {
       if (!action) return;
       e.preventDefault();
       this.#held.delete(action);
+      this.#repeat.delete(action);
     });
-    // Losing focus mid-hold otherwise leaves the party walking forever.
-    target.addEventListener('blur', () => {
-      this.#held.clear();
-      this.#deferredRelease.clear();
-    });
+    target.addEventListener('blur', () => this.clear());
     return this;
   }
 
-  /** Synthetic press, used by the on-screen touch controls. */
+  clear() {
+    this.#held.clear();
+    this.#deferred.clear();
+    this.#repeat.clear();
+  }
+
+  /** Synthetic press, for on-screen touch controls. */
   press(action) {
     if (!this.#held.has(action)) this.#pressed.add(action);
     this.#held.add(action);
   }
 
   release(action) {
-    // A tap can start and finish between two update ticks. If the press has not
-    // been seen by a frame yet, hold it until one has, or the tap is swallowed.
-    if (this.#pressed.has(action)) this.#deferredRelease.add(action);
-    else this.#held.delete(action);
+    // A tap may begin and end between two ticks; hold it for one frame so it
+    // is never swallowed.
+    if (this.#pressed.has(action)) this.#deferred.add(action);
+    else { this.#held.delete(action); this.#repeat.delete(action); }
   }
 
   held(action) { return this.#held.has(action); }
 
-  /** True once per physical keypress. Consuming prevents one press firing in
-   *  two scenes during the same frame (e.g. closing a menu and re-opening it). */
   pressed(action) {
     if (!this.#pressed.has(action) || this.#consumed.has(action)) return false;
     this.#consumed.add(action);
     return true;
   }
 
-  /** Direction pressed this frame, or null. */
-  dir() {
-    for (const d of ['up', 'down', 'left', 'right']) if (this.pressed(d)) return d;
+  /** Menu-style auto-repeat: fires once, pauses, then repeats while held. */
+  repeat(action, dt, { delay = 0.34, rate = 0.09 } = {}) {
+    if (!this.#held.has(action)) return false;
+    if (this.pressed(action)) { this.#repeat.set(action, -delay); return true; }
+    const t = (this.#repeat.get(action) ?? 0) + dt;
+    if (t >= rate) { this.#repeat.set(action, t - rate); return true; }
+    this.#repeat.set(action, t);
+    return false;
+  }
+
+  dir(dt = 0) {
+    for (const d of ['up', 'down', 'left', 'right']) {
+      if (dt ? this.repeat(d, dt) : this.pressed(d)) return d;
+    }
     return null;
   }
 
   endFrame() {
-    for (const action of this.#deferredRelease) this.#held.delete(action);
-    this.#deferredRelease.clear();
+    for (const a of this.#deferred) { this.#held.delete(a); this.#repeat.delete(a); }
+    this.#deferred.clear();
     this.#pressed.clear();
     this.#consumed.clear();
   }

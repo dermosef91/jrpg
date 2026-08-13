@@ -1,456 +1,299 @@
-import { P, FONT, alpha, mix } from './palette.js';
-import { PostFX } from './postfx.js';
+import { P, alpha, mix } from './palette.js';
+import { drawText, textWidth, wrapText, FONT_H, GLYPH_ADVANCE } from './font.js';
 
-const VIRTUAL_W = 960;
-const VIRTUAL_H = 540;
-const MAX_BUFFER_SCALE = 1.6;
-const LIGHT_CACHE_LIMIT = 96;
-const PANEL_PAD = 6;
+export const VW = 480;
+export const VH = 270;
+
+// 4x4 Bayer. Pixel art has no smooth gradients -- everything that fades, fades
+// by dithering, which is what gives the concept art its texture.
+const BAYER = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5],
+];
 
 /**
- * Canvas2D renderer on a fixed 960x540 virtual stage.
+ * A 480x270 pixel-art renderer.
  *
- * Scenes draw into an offscreen buffer in virtual coordinates; `present()`
- * composites that buffer to the visible canvas through the post-processing
- * chain. Nothing in the game uses sprites -- rings, grain, light pools and
- * panels are all geometry, which suits a setting where every surface is wood
- * and keeps the whole build under 200 kB with no assets to load.
+ * Everything is drawn into a real 480x270 backbuffer and blitted to screen at an
+ * integer scale with smoothing off, so a virtual pixel is always a clean square
+ * block of device pixels and nothing is ever half-lit.
  */
 export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
+    this.screen = canvas.getContext('2d', { alpha: false });
     this.buffer = document.createElement('canvas');
-    this.bufferCtx = this.buffer.getContext('2d');
-    this.screenCtx = canvas.getContext('2d');
-    this.ctx = this.bufferCtx;
-    this.usingBuffer = true;
-    this.fx = new PostFX(canvas);
-    this.W = VIRTUAL_W;
-    this.H = VIRTUAL_H;
+    this.buffer.width = VW;
+    this.buffer.height = VH;
+    this.ctx = this.buffer.getContext('2d');
+    this.ctx.imageSmoothingEnabled = false;
+    this.W = VW;
+    this.H = VH;
     this.scale = 1;
     this.insets = { left: 0, right: 0, top: 0, bottom: 0 };
-    this.grade = {};
-    this.supportsLetterSpacing = 'letterSpacing' in this.ctx;
-    // Radial gradients are expensive to build. Lights and contact shadows are
-    // drawn every frame from a handful of shapes, so they are rendered once into
-    // sprites and blitted after that.
-    this.lightCache = new Map();
-    // Panels are static geometry redrawn every frame, and their grain fill is the
-    // most expensive thing in the UI. Each distinct panel is rendered once into a
-    // sprite and blitted after that.
-    this.panelCache = new Map();
+    this.cache = new Map();
+    this.shakeX = 0;
+    this.shakeY = 0;
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
 
-  /** Reserve edge space (for touch controls) the stage must not occupy. */
   setInsets(insets) {
     this.insets = { left: 0, right: 0, top: 0, bottom: 0, ...insets };
     this.resize();
   }
 
   resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const { left, right, top, bottom } = this.insets;
-    const availW = Math.max(120, window.innerWidth - left - right);
+    const availW = Math.max(160, window.innerWidth - left - right);
     const availH = Math.max(90, window.innerHeight - top - bottom);
-    this.scale = Math.max(Math.min(availW / VIRTUAL_W, availH / VIRTUAL_H), 0.2);
+    // Integer scale keeps pixels square; fall back to a fractional fit only on
+    // screens too small for 1:1.
+    const fit = Math.min(availW / VW, availH / VH);
+    this.scale = fit >= 1 ? Math.floor(fit) : fit;
 
-    const cssW = Math.floor(VIRTUAL_W * this.scale);
-    const cssH = Math.floor(VIRTUAL_H * this.scale);
+    const cssW = Math.floor(VW * this.scale);
+    const cssH = Math.floor(VH * this.scale);
     this.canvas.style.width = `${cssW}px`;
     this.canvas.style.height = `${cssH}px`;
-    // The page centres the canvas, so asymmetric reservations become margin.
     this.canvas.style.marginLeft = `${left - right}px`;
     this.canvas.style.marginTop = `${top - bottom}px`;
-
-    const bufferScale = Math.min(this.scale * dpr, MAX_BUFFER_SCALE);
-    const pw = Math.max(1, Math.floor(VIRTUAL_W * bufferScale));
-    const ph = Math.max(1, Math.floor(VIRTUAL_H * bufferScale));
-    this.canvas.width = pw;
-    this.canvas.height = ph;
-    this.buffer.width = pw;
-    this.buffer.height = ph;
-    this.bufferScale = bufferScale;
-    this.ctx.setTransform(bufferScale, 0, 0, bufferScale, 0, 0);
-    // Cached sprites are rasterised at the old scale and would go soft.
-    this.lightCache.clear();
-    this.panelCache.clear();
-    this.fx.resize(pw, ph);
+    this.canvas.width = cssW;
+    this.canvas.height = cssH;
+    this.screen.imageSmoothingEnabled = false;
   }
 
-  /** Reset per-frame state and clear the target.
-   *
-   *  Bloom is the only effect that needs the scene in an offscreen buffer, so
-   *  when it is off the scene is drawn straight to the visible canvas and the
-   *  frame skips a full-screen blit entirely. */
-  begin(color = P.deep) {
-    this.usingBuffer = this.fx.quality >= 2;
-    this.ctx = this.usingBuffer ? this.bufferCtx : this.screenCtx;
+  begin(color = P.void) {
     const { ctx } = this;
-    ctx.setTransform(this.bufferScale, 0, 0, this.bufferScale, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
-    ctx.filter = 'none';
     ctx.fillStyle = color;
-    ctx.fillRect(0, 0, this.W, this.H);
+    ctx.fillRect(0, 0, VW, VH);
   }
 
-  /** Apply the post chain. `grade` is set by the active scene. */
-  present(time) {
-    this.fx.render(this.usingBuffer ? this.buffer : null, { time, ...this.grade });
+  present() {
+    const { screen, canvas } = this;
+    screen.imageSmoothingEnabled = false;
+    screen.drawImage(this.buffer,
+      Math.round(this.shakeX * this.scale), Math.round(this.shakeY * this.scale),
+      canvas.width, canvas.height);
   }
 
-  /** Back-compat alias: scenes call clear() at the top of draw(). */
-  clear(color = P.deep) { this.begin(color); }
+  // --- state ---------------------------------------------------------------
 
   save() { this.ctx.save(); }
   restore() { this.ctx.restore(); }
   alpha(a) { this.ctx.globalAlpha = a; }
-  translate(x, y) { this.ctx.translate(x, y); }
-  rotate(a) { this.ctx.rotate(a); }
-  scaleBy(x, y = x) { this.ctx.scale(x, y); }
+  translate(x, y) { this.ctx.translate(Math.round(x), Math.round(y)); }
 
-  /** Run a draw callback under a blend mode, then restore. */
-  blend(mode, fn, a = 1) {
-    const { ctx } = this;
-    ctx.save();
-    ctx.globalCompositeOperation = mode;
-    ctx.globalAlpha *= a;
-    fn(this);
-    ctx.restore();
-  }
-
-  clipRect(x, y, w, h) {
+  clip(x, y, w, h) {
     const { ctx } = this;
     ctx.beginPath();
-    ctx.rect(x, y, w, h);
+    ctx.rect(x | 0, y | 0, w | 0, h | 0);
     ctx.clip();
   }
 
-  // --- primitives -----------------------------------------------------------
+  /** Memoised offscreen art. Static backgrounds and frames are drawn once. */
+  cached(key, w, h, draw) {
+    let sprite = this.cache.get(key);
+    if (!sprite) {
+      sprite = document.createElement('canvas');
+      sprite.width = Math.max(1, w | 0);
+      sprite.height = Math.max(1, h | 0);
+      const sctx = sprite.getContext('2d');
+      sctx.imageSmoothingEnabled = false;
+      const real = this.ctx;
+      this.ctx = sctx;
+      draw(this);
+      this.ctx = real;
+      if (this.cache.size > 64) this.cache.clear();
+      this.cache.set(key, sprite);
+    }
+    return sprite;
+  }
+
+  blit(sprite, x, y) { this.ctx.drawImage(sprite, Math.round(x), Math.round(y)); }
+
+  // --- primitives ----------------------------------------------------------
+
+  px(x, y, color) {
+    this.ctx.fillStyle = color;
+    this.ctx.fillRect(x | 0, y | 0, 1, 1);
+  }
 
   rect(x, y, w, h, color) {
     this.ctx.fillStyle = color;
-    this.ctx.fillRect(x, y, w, h);
+    this.ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
   }
 
-  strokeRect(x, y, w, h, color, lw = 1) {
-    this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = lw;
-    this.ctx.strokeRect(x + lw / 2, y + lw / 2, w - lw, h - lw);
+  frame(x, y, w, h, color, weight = 1) {
+    const X = Math.round(x);
+    const Y = Math.round(y);
+    const W = Math.round(w);
+    const H = Math.round(h);
+    this.rect(X, Y, W, weight, color);
+    this.rect(X, Y + H - weight, W, weight, color);
+    this.rect(X, Y, weight, H, color);
+    this.rect(X + W - weight, Y, weight, H, color);
   }
 
-  roundRect(x, y, w, h, r, color, { stroke = false, lw = 1 } = {}) {
-    const { ctx } = this;
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, r);
-    if (stroke) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lw;
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = color;
-      ctx.fill();
+  hline(x, y, w, color) { this.rect(x, y, w, 1, color); }
+  vline(x, y, h, color) { this.rect(x, y, 1, h, color); }
+
+  /** Bresenham, so diagonals are proper pixel staircases. */
+  line(x0, y0, x1, y1, color) {
+    let x = Math.round(x0);
+    let y = Math.round(y0);
+    const ex = Math.round(x1);
+    const ey = Math.round(y1);
+    const dx = Math.abs(ex - x);
+    const dy = -Math.abs(ey - y);
+    const sx = x < ex ? 1 : -1;
+    const sy = y < ey ? 1 : -1;
+    let err = dx + dy;
+    this.ctx.fillStyle = color;
+    for (let guard = 0; guard < 4000; guard++) {
+      this.ctx.fillRect(x, y, 1, 1);
+      if (x === ex && y === ey) break;
+      const e2 = err * 2;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
     }
   }
 
-  /** Vertical two-stop fill -- the workhorse for giving flat surfaces a light
-   *  direction without hand-authoring every shade. */
-  vgrad(x, y, w, h, top, bottom) {
-    const { ctx } = this;
-    const g = ctx.createLinearGradient(x, y, x, y + h);
-    g.addColorStop(0, top);
-    g.addColorStop(1, bottom);
-    ctx.fillStyle = g;
-    ctx.fillRect(x, y, w, h);
-  }
-
-  /** Horizontal two-stop fill -- used for cylindrical shading on trunks and posts. */
-  hgrad(x, y, w, h, left, mid, right) {
-    const { ctx } = this;
-    const g = ctx.createLinearGradient(x, y, x + w, y);
-    g.addColorStop(0, left);
-    g.addColorStop(0.42, mid);
-    g.addColorStop(1, right);
-    ctx.fillStyle = g;
-    ctx.fillRect(x, y, w, h);
-  }
-
-  line(x1, y1, x2, y2, color, lw = 1, cap = 'butt') {
-    const { ctx } = this;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lw;
-    ctx.lineCap = cap;
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.stroke();
-    ctx.lineCap = 'butt';
-  }
-
-  circle(x, y, radius, color, { stroke = false, lw = 1 } = {}) {
-    const { ctx } = this;
-    ctx.beginPath();
-    ctx.arc(x, y, Math.max(radius, 0.1), 0, Math.PI * 2);
-    if (stroke) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lw;
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = color;
-      ctx.fill();
+  /** Midpoint circle, filled or outlined. */
+  circle(cx, cy, radius, color, { fill = true } = {}) {
+    const r = Math.round(radius);
+    const CX = Math.round(cx);
+    const CY = Math.round(cy);
+    this.ctx.fillStyle = color;
+    if (fill) {
+      for (let y = -r; y <= r; y++) {
+        const span = Math.floor(Math.sqrt(r * r - y * y));
+        this.ctx.fillRect(CX - span, CY + y, span * 2 + 1, 1);
+      }
+      return;
+    }
+    let x = r;
+    let y = 0;
+    let err = 1 - r;
+    while (x >= y) {
+      for (const [px, py] of [[x, y], [y, x], [-x, y], [-y, x], [-x, -y], [-y, -x], [x, -y], [y, -x]]) {
+        this.ctx.fillRect(CX + px, CY + py, 1, 1);
+      }
+      y++;
+      if (err < 0) err += 2 * y + 1;
+      else { x--; err += 2 * (y - x) + 1; }
     }
   }
 
-  ellipse(x, y, rx, ry, color, { rotation = 0, stroke = false, lw = 1 } = {}) {
-    const { ctx } = this;
-    ctx.beginPath();
-    ctx.ellipse(x, y, Math.max(rx, 0.1), Math.max(ry, 0.1), rotation, 0, Math.PI * 2);
-    if (stroke) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lw;
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = color;
-      ctx.fill();
+  ellipse(cx, cy, rx, ry, color) {
+    const RX = Math.max(1, Math.round(rx));
+    const RY = Math.max(1, Math.round(ry));
+    const CX = Math.round(cx);
+    const CY = Math.round(cy);
+    this.ctx.fillStyle = color;
+    for (let y = -RY; y <= RY; y++) {
+      const t = 1 - (y * y) / (RY * RY);
+      if (t <= 0) continue;
+      const span = Math.floor(RX * Math.sqrt(t));
+      this.ctx.fillRect(CX - span, CY + y, span * 2 + 1, 1);
     }
   }
 
-  arc(x, y, radius, from, to, color, lw = 1) {
-    const { ctx } = this;
-    ctx.beginPath();
-    ctx.arc(x, y, Math.max(radius, 0.1), from, to);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lw;
-    ctx.stroke();
-  }
-
-  poly(points, color, { stroke = false, lw = 1, close = true } = {}) {
-    const { ctx } = this;
-    ctx.beginPath();
-    points.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-    if (close) ctx.closePath();
-    if (stroke) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lw;
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = color;
-      ctx.fill();
+  /** Scanline polygon fill. Points are [x, y] pairs. */
+  poly(points, color) {
+    if (points.length < 3) return;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const [, y] of points) {
+      minY = Math.min(minY, Math.round(y));
+      maxY = Math.max(maxY, Math.round(y));
     }
-  }
-
-  // --- light ----------------------------------------------------------------
-
-  /** Render (or fetch) a radial falloff sprite. Radii are quantised so pulsing
-   *  lights reuse a few sprites instead of minting one per frame. */
-  #falloff(radius, color, intensity, mid) {
-    const q = Math.max(4, Math.round(radius / 6) * 6);
-    const key = `${q}|${color}|${intensity.toFixed(2)}|${mid}`;
-    let sprite = this.lightCache.get(key);
-    if (sprite) return sprite;
-
-    if (this.lightCache.size > LIGHT_CACHE_LIMIT) this.lightCache.clear();
-    const size = Math.max(2, Math.ceil(q * 2));
-    sprite = document.createElement('canvas');
-    sprite.width = size;
-    sprite.height = size;
-    const sctx = sprite.getContext('2d');
-    const g = sctx.createRadialGradient(q, q, 0, q, q, q);
-    g.addColorStop(0, alpha(color, intensity));
-    if (mid) g.addColorStop(0.45, alpha(color, intensity * 0.35));
-    g.addColorStop(1, alpha(color, 0));
-    sctx.fillStyle = g;
-    sctx.fillRect(0, 0, size, size);
-    sprite.q = q;
-    this.lightCache.set(key, sprite);
-    return sprite;
-  }
-
-  /** An additive pool of light. Lamps, the Ember, sunwood, graft glow. */
-  light(x, y, radius, color = P.sunwood, intensity = 0.6) {
-    if (radius < 1 || intensity <= 0) return;
-    const sprite = this.#falloff(radius, color, intensity, true);
-    const { ctx } = this;
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.drawImage(sprite, x - radius, y - radius, radius * 2, radius * 2);
-    ctx.restore();
-  }
-
-  /** A soft contact shadow under an object. */
-  groundShadow(x, y, rx, ry, strength = 0.5) {
-    if (rx < 1) return;
-    const sprite = this.#falloff(rx, P.void, strength, false);
-    this.ctx.drawImage(sprite, x - rx, y - ry, rx * 2, ry * 2);
-  }
-
-  /** Diagonal grain lines inside a rect. The visual language of the game is
-   *  "you are looking at wood", so almost every surface gets some. */
-  grainFill(x, y, w, h, color, { angle = -0.35, spacing = 7, lw = 1, alpha: a = 0.5, jitter = 0 } = {}) {
-    const { ctx } = this;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(x, y, w, h);
-    ctx.clip();
-    ctx.globalAlpha *= a;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lw;
-    const span = Math.abs(h * Math.tan(angle)) + w;
-    let n = 0;
-    for (let i = -span; i < span + w; i += spacing) {
-      const wobble = jitter ? Math.sin(n * 2.3) * jitter : 0;
-      ctx.beginPath();
-      ctx.moveTo(x + i + wobble, y + h);
-      ctx.lineTo(x + i + h * Math.tan(angle) - wobble, y);
-      ctx.stroke();
-      n++;
-    }
-    ctx.restore();
-  }
-
-  // --- text -----------------------------------------------------------------
-
-  #font(size, weight, family) {
-    return `${weight} ${size}px ${family === 'display' ? FONT.display : FONT.ui}`;
-  }
-
-  text(str, x, y, opts = {}) {
-    const {
-      size = 14, color = P.pale, align = 'left', baseline = 'alphabetic',
-      weight = 400, alpha: a = 1, font = 'ui', tracking = 0, shadow = null,
-    } = opts;
-    const { ctx } = this;
-    ctx.save();
-    ctx.globalAlpha *= a;
-    ctx.font = this.#font(size, weight, font);
-    if (this.supportsLetterSpacing) ctx.letterSpacing = `${tracking}px`;
-    ctx.textAlign = align;
-    ctx.textBaseline = baseline;
-    if (shadow) {
-      ctx.fillStyle = shadow;
-      ctx.fillText(str, x + 1, y + 1);
-    }
-    ctx.fillStyle = color;
-    ctx.fillText(str, x, y);
-    if (this.supportsLetterSpacing) ctx.letterSpacing = '0px';
-    ctx.restore();
-    return this;
-  }
-
-  measure(str, size = 14, weight = 400, font = 'ui') {
-    this.ctx.font = this.#font(size, weight, font);
-    return this.ctx.measureText(str).width;
-  }
-
-  /** Greedy word wrap at a pixel width. */
-  wrap(str, maxWidth, size = 14, weight = 400, font = 'ui') {
-    const out = [];
-    for (const paragraph of String(str).split('\n')) {
-      let line = '';
-      for (const word of paragraph.split(' ')) {
-        const candidate = line ? `${line} ${word}` : word;
-        if (line && this.measure(candidate, size, weight, font) > maxWidth) {
-          out.push(line);
-          line = word;
-        } else {
-          line = candidate;
+    this.ctx.fillStyle = color;
+    for (let y = minY; y <= maxY; y++) {
+      const xs = [];
+      for (let i = 0; i < points.length; i++) {
+        const [x1, y1] = points[i];
+        const [x2, y2] = points[(i + 1) % points.length];
+        if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+          xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
         }
       }
-      out.push(line);
+      xs.sort((a, b) => a - b);
+      for (let i = 0; i + 1 < xs.length; i += 2) {
+        const a = Math.round(xs[i]);
+        const b = Math.round(xs[i + 1]);
+        if (b > a) this.ctx.fillRect(a, y, b - a, 1);
+      }
     }
-    return out;
   }
 
-  // --- chrome ---------------------------------------------------------------
+  // --- dithering -----------------------------------------------------------
 
-  /** Standard UI panel: a carved board. Bevelled top edge catching the light,
-   *  dark underside, grain across the face, notched corners. Cached per shape. */
-  panel(x, y, w, h, {
-    fill = null, border = P.wood, accent = null, grain = true, lit = true, radius = 3,
-  } = {}) {
-    const key = `${Math.round(w)}x${Math.round(h)}|${fill}|${border}|${accent}|${grain}|${lit}|${radius}`;
-    let sprite = this.panelCache.get(key);
-    if (!sprite) {
-      sprite = this.#renderPanel(Math.round(w), Math.round(h), { fill, border, accent, grain, lit, radius });
-      if (this.panelCache.size > 48) this.panelCache.clear();
-      this.panelCache.set(key, sprite);
+  /** Fill a rect with `color` at a dithered coverage of 0..1. */
+  dither(x, y, w, h, color, coverage) {
+    const c = Math.max(0, Math.min(1, coverage));
+    if (c <= 0) return;
+    if (c >= 1) { this.rect(x, y, w, h, color); return; }
+    const threshold = c * 16;
+    const X = Math.round(x);
+    const Y = Math.round(y);
+    const W = Math.round(w);
+    const H = Math.round(h);
+    this.ctx.fillStyle = color;
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        if (BAYER[py & 3][px & 3] < threshold) this.ctx.fillRect(X + px, Y + py, 1, 1);
+      }
     }
-    this.ctx.drawImage(sprite, x - PANEL_PAD, y - PANEL_PAD,
-      sprite.width / this.bufferScale, sprite.height / this.bufferScale);
-    return this;
   }
 
-  #renderPanel(w, h, { fill, border, accent, grain, lit, radius }) {
-    const scale = this.bufferScale;
-    const sprite = document.createElement('canvas');
-    sprite.width = Math.ceil((w + PANEL_PAD * 2) * scale);
-    sprite.height = Math.ceil((h + PANEL_PAD * 2) * scale);
-    const ctx = sprite.getContext('2d');
-    ctx.setTransform(scale, 0, 0, scale, 0, 0);
-
-    // Draw into the sprite using this renderer's own primitives.
-    const realCtx = this.ctx;
-    this.ctx = ctx;
-    const x = PANEL_PAD;
-    const y = PANEL_PAD;
-
-    this.roundRect(x + 2, y + 4, w, h, radius, alpha(P.void, 0.45));
-    this.roundRect(x, y, w, h, radius, fill ?? P.bark);
-
-    if (!fill) {
-      const g = ctx.createLinearGradient(x, y, x, y + h);
-      g.addColorStop(0, mix(P.bark, P.barkHi, 0.55));
-      g.addColorStop(0.35, P.bark);
-      g.addColorStop(1, P.deep);
-      ctx.save();
-      ctx.beginPath();
-      ctx.roundRect(x, y, w, h, radius);
-      ctx.clip();
-      ctx.fillStyle = g;
-      ctx.fillRect(x, y, w, h);
-      ctx.restore();
+  /** A dithered radial glow: the only kind of light this renderer has. */
+  glow(cx, cy, radius, color, strength = 1) {
+    const r = Math.round(radius);
+    if (r < 1) return;
+    const CX = Math.round(cx);
+    const CY = Math.round(cy);
+    this.ctx.fillStyle = color;
+    for (let y = -r; y <= r; y++) {
+      for (let x = -r; x <= r; x++) {
+        const d = Math.sqrt(x * x + y * y) / r;
+        if (d > 1) continue;
+        const c = (1 - d) ** 1.7 * strength;
+        if (BAYER[(CY + y) & 3][(CX + x) & 3] < c * 16) {
+          this.ctx.fillRect(CX + x, CY + y, 1, 1);
+        }
+      }
     }
-
-    if (grain) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.roundRect(x, y, w, h, radius);
-      ctx.clip();
-      this.grainFill(x, y, w, h, P.barkHi, { spacing: 9, alpha: 0.45, jitter: 1.2 });
-      ctx.restore();
-    }
-
-    if (lit) {
-      this.line(x + 2, y + 1.5, x + w - 2, y + 1.5, alpha(P.woodHi, 0.5), 1.5);
-      this.line(x + 2, y + h - 1.5, x + w - 2, y + h - 1.5, alpha(P.void, 0.6), 1.5);
-    }
-    this.roundRect(x, y, w, h, radius, border, { stroke: true, lw: 2 });
-
-    const n = 8;
-    const c = accent ?? border;
-    for (const [cx, cy, dx, dy] of [
-      [x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1],
-    ]) {
-      this.line(cx, cy + dy * n, cx + dx * n, cy + dy * n, c, 2);
-      this.line(cx + dx * n, cy, cx + dx * n, cy + dy * n, c, 2);
-    }
-
-    this.ctx = realCtx;
-    return sprite;
   }
 
-  /** A filled meter with a lit top edge and a dark well. */
-  bar(x, y, w, h, ratio, color, { back = P.void, glow = false } = {}) {
-    const filled = Math.max(0, Math.min(1, ratio)) * w;
-    this.rect(x, y, w, h, back);
-    if (filled > 0) {
-      this.vgrad(x, y, filled, h, mix(color, P.pale, 0.35), color);
-      if (glow) this.light(x + filled, y + h / 2, h * 2.4, color, 0.4);
+  /** Vertical dithered ramp between two colours. */
+  vramp(x, y, w, h, top, bottom, steps = 5) {
+    const H = Math.round(h);
+    const band = Math.max(1, Math.floor(H / steps));
+    for (let i = 0; i < steps; i++) {
+      const t = i / Math.max(1, steps - 1);
+      const yy = Math.round(y) + i * band;
+      const hh = i === steps - 1 ? Math.round(y) + H - yy : band;
+      this.rect(x, yy, w, hh, mix(top, bottom, t));
     }
-    this.strokeRect(x, y, w, h, alpha(P.void, 0.8), 1);
-    this.line(x, y, x + w, y, alpha(P.void, 0.5), 1);
-    return this;
   }
+
+  // --- text ----------------------------------------------------------------
+
+  text(str, x, y, opts = {}) {
+    return drawText(this.ctx, str, x, y, opts);
+  }
+
+  measure(str, opts) { return textWidth(str, opts); }
+  wrap(str, maxWidth, opts) { return wrapText(str, maxWidth, opts); }
+
+  get lineHeight() { return FONT_H + 3; }
+  get glyphAdvance() { return GLYPH_ADVANCE; }
 }
+
+export { alpha, mix };
