@@ -149,6 +149,13 @@ const KIT = {
     a.tone({ freq: 784, type: 'sine', gain: 0.08, decay: 0.6, delay: 0.12 });
   },
   page: (a) => a.hiss({ gain: 0.06, decay: 0.05, type: 'bandpass', freq: 3000, q: 2 }),
+  /** A Warden's bell: struck once, badly, and left to die away. */
+  bell: (a) => {
+    a.tone({ freq: 262, type: 'sine', gain: 0.16, decay: 2.6 });
+    a.tone({ freq: 392, type: 'sine', gain: 0.09, decay: 2.0, delay: 0.01 });
+    a.tone({ freq: 622, type: 'sine', gain: 0.05, decay: 1.4, delay: 0.02 });
+    a.hiss({ gain: 0.06, decay: 0.12, type: 'bandpass', freq: 2400, q: 3 });
+  },
   victory: (a) => {
     for (const [i, f] of [262, 349, 440, 523].entries()) {
       a.tone({ freq: f, type: 'triangle', gain: 0.12, decay: 1.1, delay: i * 0.13 });

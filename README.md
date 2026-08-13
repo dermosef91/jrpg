@@ -13,7 +13,7 @@ pixel is drawn and every sound is synthesised at play time.
 
 ```sh
 npm start        # http://localhost:8080
-npm test         # 38 tests, no dependencies
+npm test         # 44 tests, no dependencies
 npm run build    # assemble the deployable site into _site/
 npm run smoke    # drive every scene in a real browser (needs Playwright, see below)
 ```
@@ -24,6 +24,39 @@ No build step and no dependencies — ES modules, canvas, and a small static ser
 **Controls:** arrows move · `enter` confirm · `x` back · `c` menu ·
 `q`/`e` menu tabs · `m` sound. On touch devices the same actions appear as
 on-screen keys.
+
+## The first fifteen minutes
+
+The game opens on a black screen and a bell. A Warden went down the Quiet Stair
+four days ago to read the writ on a seam of inlay that had gone cold, and a
+Warden always rings the bell.
+
+You then walk down that stair yourself, in the dark, with one lamp. The stone
+shades out by distance from the lamp rather than being cropped by a black
+circle, so what you get is light falling on rock — and every seam of inlay
+beside the steps is a cut channel with nothing running through it. Nobody
+explains that. You see it, and then Aya says it.
+
+Six trigger tiles carry the descent: the dead seam, an ambush, two hundred
+steps of nothing, a shock from far below, a glimpse, and the landing. The
+ambush is the tutorial fight, and it is where **resonance** gets taught —
+after the player has already landed a resonant hit and watched it come up
+double, never before. The fight happens on the stair itself, on its own dark
+backdrop, not in the sunlit arena.
+
+The landing is a Warden's mask, cracked through, and a bell that will not ring.
+Then you go back up a great deal faster than you came down, and arrive at
+Rootplaza having earned it — lamps lit, everyone walking about like it is a
+normal day. The NPCs have different lines now that you have seen the mask, the
+objective is REPORT THE SEAM, and the Gate Hand is the only person who counts as
+having been told.
+
+The script itself is a plain array of steps in
+[`src/game/story/prologue.js`](src/game/story/prologue.js), run by a small
+director scene that sits on top of the field and drives it. Tests assert that
+every beat is hung on a trigger tile that exists, that every trigger has a beat,
+that the beats fire in the order the player will walk into them, and that no
+script ever ends with the screen still faded to black.
 
 ## The game
 
@@ -75,6 +108,7 @@ src/game/art/         arena backdrop, party figures, foes, props, portraits
 src/game/battle/      battle engine and its scene
 src/game/explore/     isometric projection, map, exploration scene
 src/game/menu/        the party menu
+src/game/story/       the cutscene director and the prologue script
 src/game/data/        party, rites, foes, equipment, items, shards, world route
 test/                 pure-logic tests: palette, font, rites, battle, world, touch
 test/browser/         headless Chromium smoke over every scene and five viewports

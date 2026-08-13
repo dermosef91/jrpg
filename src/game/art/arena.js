@@ -11,13 +11,149 @@ import { makeRng } from '../../engine/rng.js';
 export const ARENA_H = 192;
 export const FLOOR_Y = 132;
 
-export function drawArena(r, { width = 480, t = 0 } = {}) {
+export function drawArena(r, { width = 480, t = 0, kind = 'low' } = {}) {
+  if (kind === 'stair') return drawStair(r, width, t);
   const sprite = r.cached('arena:low', width, ARENA_H, (rr) => paintArena(rr, width));
   r.blit(sprite, 0, 0);
   // The one live element: the mandala breathing.
   const pulse = 0.55 + 0.45 * Math.sin(t * 0.9);
   r.glow(width / 2, 62, 40 + pulse * 8, P.ember, 0.16 + pulse * 0.1);
   r.glow(width / 2, 62, 14, P.emberHot, 0.35 + pulse * 0.25);
+}
+
+/** The Quiet Stair, seen side on. A fight that happens in the dark should not
+ *  cut to a sunlit hall: the shaft is the same rock, the same dead seam, and
+ *  the same one lamp the player has been walking behind. */
+function drawStair(r, W, t) {
+  const sprite = r.cached('arena:stair', W, ARENA_H, (rr) => paintStair(rr, W));
+  r.blit(sprite, 0, 0);
+  // Zahra's lamp gutters. Kept small and dense on purpose: a wide, weak glow
+  // dithers down to a lattice of single pixels and reads as a fault.
+  const flicker = 1 + Math.sin(t * 3.3) * 0.07 + Math.sin(t * 9.1) * 0.03;
+  r.glow(LAMP_X, LAMP_Y, Math.round(13 * flicker), P.ember, 0.5);
+  r.glow(LAMP_X, LAMP_Y, Math.round(5 * flicker), P.emberWhite, 0.85);
+}
+
+const LAMP_X = 296;
+const LAMP_Y = FLOOR_Y + 14;
+
+/** Light falls off from the one lamp on the landing. Everything painted into
+ *  the shaft is mixed toward the void by this before it is drawn, so the
+ *  gradient is in the colours themselves and never in a dither pattern. */
+function lampLit(x, y) {
+  const d = Math.hypot((x - LAMP_X) / 232, (y - LAMP_Y) / 168);
+  return Math.max(0, Math.min(1, 1 - d)) ** 1.5;
+}
+
+function paintStair(r, W) {
+  const rng = makeRng(0x51a12);
+  r.rect(0, 0, W, ARENA_H, P.void);
+
+  // --- the shaft the stair was cut down --------------------------------------
+  // Courses of dressed rock, uneven, climbing out of the lamp and into nothing.
+  const courses = [];
+  for (let y = -6, i = 0; y < FLOOR_Y; i++) {
+    const h = 11 + (i % 3) * 4;
+    courses.push({ y, h, offset: (i * 17) % 54 });
+    y += h;
+  }
+  for (const course of courses) {
+    for (let y = Math.max(0, course.y); y < Math.min(FLOOR_Y, course.y + course.h); y++) {
+      const face = (y - course.y) / course.h;
+      for (let x = 0; x < W; x += 2) {
+        const lit = lampLit(x + 1, y);
+        if (lit <= 0.02) continue;
+        // top of each block catches the light, the underside does not
+        const tone = face < 0.16 ? P.stoneMid : face > 0.82 ? P.stoneShadow : P.stoneDark;
+        r.rect(x, y, 2, 1, mix(P.void, tone, lit * 0.82));
+      }
+    }
+    // the joint under each course, and the vertical joints along it
+    for (let x = 0; x < W; x += 2) {
+      const lit = lampLit(x, course.y + course.h - 1);
+      if (lit <= 0.02) continue;
+      r.rect(x, course.y + course.h - 1, 2, 1, mix(P.void, P.black, lit * 0.7));
+    }
+    for (let x = course.offset - 54; x < W; x += 54) {
+      const lit = lampLit(x, course.y + course.h / 2);
+      if (lit <= 0.02) continue;
+      r.vline(x, Math.max(0, course.y), Math.min(FLOOR_Y - course.y, course.h) - 1,
+        mix(P.void, P.black, lit * 0.6));
+    }
+  }
+
+  // --- the dead seam ---------------------------------------------------------
+  // Still cut into the wall, still running the whole height, and out.
+  for (const sx of [LAMP_X - 168, LAMP_X - 82, LAMP_X + 96]) {
+    for (let y = 0; y < FLOOR_Y; y++) {
+      const lit = lampLit(sx, y);
+      if (lit <= 0.02) continue;
+      r.px(sx, y, mix(P.void, P.black, lit * 0.95));
+      r.px(sx + 1, y, mix(P.void, P.stoneShadow, lit * 0.7));
+    }
+  }
+  // the empty sockets where shards used to sit in the seam
+  for (let i = 0; i < 6; i++) {
+    const sx = LAMP_X - 82;
+    const sy = 14 + i * 22;
+    const lit = lampLit(sx, sy);
+    if (lit <= 0.03) continue;
+    r.circle(sx, sy, 3, mix(P.void, P.black, lit), { fill: true });
+    r.circle(sx, sy, 3, mix(P.void, P.stoneShadow, lit * 0.8), { fill: false });
+  }
+
+  // --- roots through the joints, and the dark closing in ---------------------
+  rootMass(r, rng, -36, 0, 78, ARENA_H, 1);
+  rootMass(r, rng, W - 42, 0, 78, ARENA_H, -1);
+  overheadRoots(r, rng, W);
+
+  stairFloor(r, W);
+}
+
+/** The landing the fight happens on. Flagged stone, lit only where the lamp
+ *  puts light on it, with the rest of the stair dropping away below frame. */
+function stairFloor(r, W) {
+  const fy = FLOOR_Y;
+  r.rect(0, fy, W, ARENA_H - fy, P.void);
+  for (let y = fy; y < ARENA_H; y++) {
+    for (let x = 0; x < W; x += 2) {
+      const lit = lampLit(x + 1, y);
+      if (lit <= 0.02) continue;
+      r.rect(x, y, 2, 1, mix(P.void, P.stoneDark, lit * 0.75));
+    }
+  }
+  // the lip where the wall meets the floor
+  for (let x = 0; x < W; x += 2) {
+    const lit = lampLit(x, fy);
+    if (lit <= 0.02) continue;
+    r.rect(x, fy, 2, 1, mix(P.void, P.stoneLit, lit * 0.8));
+    r.rect(x, fy + 1, 2, 1, mix(P.void, P.black, lit * 0.6));
+  }
+  // Flags, drawn in perspective: the joints splay as they come toward the
+  // camera, which is what tells the eye this is a floor and not a back wall.
+  for (let i = -7; i <= 7; i++) {
+    for (let y = fy + 3; y < ARENA_H; y++) {
+      const d = (y - fy) / (ARENA_H - fy);
+      const x = Math.round(LAMP_X + i * 34 * (0.5 + d * 1.5));
+      if (x < 0 || x >= W) continue;
+      const lit = lampLit(x, y);
+      if (lit <= 0.04) continue;
+      r.px(x, y, mix(P.void, P.black, lit * 0.55));
+    }
+  }
+  for (let i = 1; i <= 3; i++) {
+    const y = fy + 8 + i * 17;
+    for (let x = 0; x < W; x += 2) {
+      const lit = lampLit(x, y);
+      if (lit <= 0.04) continue;
+      r.rect(x, y, 2, 1, mix(P.void, P.black, lit * 0.5));
+    }
+  }
+  // The stair carries on down past the bottom of the frame.
+  for (let y = ARENA_H - 9; y < ARENA_H; y++) {
+    const k = (y - (ARENA_H - 9)) / 9;
+    r.hline(0, y, W, alpha(P.void, 0.35 + k * 0.6));
+  }
 }
 
 function paintArena(r, W) {

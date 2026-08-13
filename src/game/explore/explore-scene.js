@@ -17,9 +17,10 @@ const DIRS = {
 };
 
 export class ExploreScene extends Scene {
-  constructor({ spawn = null } = {}) {
+  constructor({ mapId = 'rootplaza', spawn = null } = {}) {
     super();
-    this.map = buildMap();
+    this.mapId = mapId;
+    this.map = buildMap(mapId);
     const start = spawn ?? this.map.spawn;
     this.px = start.x;
     this.py = start.y;
@@ -33,6 +34,8 @@ export class ExploreScene extends Scene {
     this.rng = makeRng(0x1057);
     this.opened = new Set();
     this.cam = { x: 0, y: 0 };
+    this.scriptPath = null;
+    this.trail = [];
     this.motes = Array.from({ length: 26 }, () => ({
       x: Math.random() * 480, y: Math.random() * 270,
       vy: -(2 + Math.random() * 6), vx: (Math.random() - 0.5) * 3,
@@ -40,8 +43,52 @@ export class ExploreScene extends Scene {
   }
 
   enter() {
-    this.audio?.setMood('field');
+    this.audio?.setMood(this.map.ambient);
     this.banner = 2.6;
+  }
+
+  /** Drive the party along a path. Used by cutscenes. */
+  scriptWalk(path) {
+    this.scriptPath = path.map(([x, y]) => ({ x, y }));
+  }
+
+  get scriptedWalking() { return !!this.scriptPath?.length || this.moving; }
+
+  /** Tick while a cutscene owns the input. Movement and animation only. */
+  updateScripted(dt) {
+    this.t += dt;
+    this.banner = Math.max(0, this.banner - dt);
+    this.#ambient(dt);
+    if (this.moving) {
+      this.moveT = Math.max(0, this.moveT - dt);
+      if (this.moveT === 0) this.#land();
+      return;
+    }
+    if (!this.scriptPath?.length) return;
+    const next = this.scriptPath[0];
+    const dx = Math.sign(next.x - this.px);
+    const dy = Math.sign(next.y - this.py);
+    if (dx === 0 && dy === 0) { this.scriptPath.shift(); return; }
+    // Step one axis at a time so the walk reads as walking, not sliding.
+    const step = dx !== 0 ? [dx, 0] : [0, dy];
+    this.facing = dx !== 0 ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    if (this.canEnter(this.px + step[0], this.py + step[1])) this.#begin(step[0], step[1]);
+    else this.scriptPath.shift();
+  }
+
+  #begin(dx, dy) {
+    this.fromX = this.px;
+    this.fromY = this.py;
+    this.px += dx;
+    this.py += dy;
+    this.moveT = MOVE_TIME;
+  }
+
+  /** Record where the leader has been, so the rest of the line can follow it. */
+  #land() {
+    this.trail.unshift({ x: this.px, y: this.py, facing: this.facing });
+    if (this.trail.length > 24) this.trail.pop();
+    this.#arrive();
   }
 
   get moving() { return this.moveT > 0; }
@@ -60,18 +107,22 @@ export class ExploreScene extends Scene {
 
   propAt(x, y) { return this.map.props.find((p) => p.x === x && p.y === y) ?? null; }
 
-  update(dt) {
-    this.t += dt;
-    this.banner = Math.max(0, this.banner - dt);
+  #ambient(dt) {
     for (const m of this.motes) {
       m.y += m.vy * dt;
       m.x += m.vx * dt;
       if (m.y < -2) { m.y = 272; m.x = Math.random() * 480; }
     }
+  }
+
+  update(dt) {
+    this.t += dt;
+    this.banner = Math.max(0, this.banner - dt);
+    this.#ambient(dt);
 
     if (this.moving) {
       this.moveT = Math.max(0, this.moveT - dt);
-      if (this.moveT === 0) this.#arrive();
+      if (this.moveT === 0) this.#land();
       return;
     }
 
@@ -81,13 +132,7 @@ export class ExploreScene extends Scene {
     for (const [action, [dx, dy]] of Object.entries(DIRS)) {
       if (!this.input.held(action)) continue;
       this.facing = action;
-      if (this.canEnter(this.px + dx, this.py + dy)) {
-        this.fromX = this.px;
-        this.fromY = this.py;
-        this.px += dx;
-        this.py += dy;
-        this.moveT = MOVE_TIME;
-      }
+      if (this.canEnter(this.px + dx, this.py + dy)) this.#begin(dx, dy);
       return;
     }
   }
@@ -96,9 +141,14 @@ export class ExploreScene extends Scene {
     this.audio?.play('step');
     this.steps += 1;
     const here = this.propAt(this.px, this.py);
+    if (here?.kind === 'trigger' && !this.game.firedTriggers.has(here.id)) {
+      this.game.firedTriggers.add(here.id);
+      if (this.game.fireTrigger(here.id)) return;
+    }
     if (here?.kind === 'door') { this.#enterDoor(); return; }
     // Encounters only out on the open decks, never in the plaza itself.
     const cell = this.cell(this.px, this.py);
+    if (this.game.encountersOff) return;
     if (cell && cell.ch === 's' && this.steps > 8 && this.rng.chance(0.055)) {
       this.steps = 0;
       this.audio?.play('crit');
@@ -126,12 +176,31 @@ export class ExploreScene extends Scene {
       }]));
       return;
     }
+    if (target.kind === 'mask') {
+      this.game.scenes.push(new DialogueScene([{
+        speaker: 'THE MASK',
+        text: 'Cracked clean through, face up, four days in the dark. The bell is beside it and the bell did not ring.',
+      }]));
+      return;
+    }
     if (target.kind === 'npc') {
-      const entry = NPC_LINES[`${target.x},${target.y}`];
+      const entry = NPC_LINES[`${this.mapId}:${target.x},${target.y}`];
       if (!entry) return;
       this.audio?.play('confirm');
+      const reporting = this.game.flags.has('sawTheMask') && entry.after;
+      const lines = reporting ? entry.after : entry.before;
       this.game.scenes.push(new DialogueScene(
-        entry.lines.map((text) => ({ speaker: entry.name, text })),
+        lines.map((text) => ({ speaker: entry.name, text })),
+        {
+          onEnd: () => {
+            // Only the Gate Hand counts as having reported it. Telling the
+            // shard factor is gossip, not a report.
+            if (!reporting || !entry.report || this.game.flags.has('reported')) return;
+            this.game.flags.add('reported');
+            this.game.setObjective('GO BACK DOWN THE STAIR');
+            this.audio?.play('open');
+          },
+        },
       ));
       return;
     }
@@ -149,12 +218,7 @@ export class ExploreScene extends Scene {
 
   #enterDoor() {
     this.audio?.play('open');
-    this.game.scenes.push(new DialogueScene([{
-      speaker: 'THE QUIET STAIR',
-      text: 'The stair goes down past where the inlay still burns. Something is holding a note down there.',
-    }], {
-      onEnd: () => this.game.startBattle('warden'),
-    }));
+    this.game.descend();
   }
 
   // --- draw ----------------------------------------------------------------
@@ -177,18 +241,51 @@ export class ExploreScene extends Scene {
 
     // the black of the gallery, with a faint warm wash where the plaza burns
     r.dither(0, 0, r.W, r.H, P.black, 0.5);
-    const plaza = toScreen(9, 11, 0);
-    r.glow(plaza.x - cam.x, plaza.y - cam.y, 96, P.emberDeep, 0.055);
+    if (!this.map.dark) {
+      const plaza = toScreen(9, 11, 0);
+      r.wash(plaza.x - cam.x, plaza.y - cam.y, 150, 78, P.emberDeep, 0.30);
+    }
 
     r.save();
     r.translate(-cam.x, -cam.y);
     this.#drawWorld(r, p);
     r.restore();
 
+    if (this.map.dark) this.#drawDarkness(r, p, cam);
     for (const m of this.motes) r.px(Math.round(m.x), Math.round(m.y), P.emberDeep);
     drawHangingRoots(r, cam.x, cam.y, this.t);
 
     this.#drawHud(r);
+  }
+
+  /** The rock a cut passage was cut through. The far side rises above head
+   *  height; the near side is kept to a kerb, because a full block there would
+   *  stand between the camera and the steps the player is walking down. */
+  #walls() {
+    if (this.#wallCache) return this.#wallCache;
+    const { map } = this;
+    const out = [];
+    for (let y = 0; y < map.h; y++) {
+      for (let x = 0; x < map.w; x++) {
+        if (map.cells[y][x].walk) continue;
+        const far = [[1, 0], [0, 1], [1, 1]]
+          .map(([dx, dy]) => map.at(x + dx, y + dy))
+          .filter((n) => n?.walk);
+        const near = [[-1, 0], [0, -1], [-1, -1]]
+          .map(([dx, dy]) => map.at(x + dx, y + dy))
+          .filter((n) => n?.walk);
+        const touching = far.length ? far : near;
+        if (!touching.length) continue;
+        const floor = Math.max(...touching.map((n) => n.z));
+        out.push({
+          x, y, wall: true, tall: far.length > 0,
+          z: far.length ? floor + 2 : floor,
+          seed: (x * 7 + y * 13) % 5,
+        });
+      }
+    }
+    this.#wallCache = out;
+    return out;
   }
 
   #drawWorld(r, p) {
@@ -202,27 +299,47 @@ export class ExploreScene extends Scene {
         order.push(cell);
       }
     }
+    if (map.dark) order.push(...this.#walls());
     order.sort((a, b) => (a.x + a.y) - (b.x + b.y) || a.z - b.z);
 
     for (const cell of order) {
+      if (cell.wall) {
+        const dim = this.#lampDim(cell, p);
+        if (dim >= 0.98) continue;
+        const s = toScreen(cell.x, cell.y, cell.z - (cell.seed % 2) * 0.2);
+        drawTile(r, s.x, s.y, { top: cell.tall ? P.stoneDark : P.stoneShadow },
+          { drop: cell.tall ? 30 + cell.seed * 3 : 9, dim, lit: cell.tall ? 0.5 : 0.3 });
+        continue;
+      }
       const s = toScreen(cell.x, cell.y, cell.z);
       const below = map.at(cell.x, cell.y + 1);
       const drop = !below || !below.walk || below.z < cell.z
         ? Math.max(4, (cell.z - (below?.z ?? -1)) * ZH)
         : 0;
-      drawTile(r, s.x, s.y, { top: cell.top }, { inlay: cell.inlay, drop });
+      drawTile(r, s.x, s.y, { top: cell.top, dead: cell.dead },
+        { inlay: cell.inlay, drop, dim: this.#lampDim(cell, p) });
       if (cell.bridge) this.#bridgePlanks(r, s.x, s.y);
     }
 
     // the mosaic sits on the plaza, under everything that stands on it
-    const centre = toScreen(9, 11.5, 0);
-    drawPlazaMosaic(r, centre.x, centre.y, this.t);
+    if (!map.dark) {
+      const centre = toScreen(9, 11.5, 0);
+      drawPlazaMosaic(r, centre.x, centre.y, this.t);
+    }
 
     // then everything that stands up, sorted with the party token
-    const standing = map.props.map((prop) => ({
-      depth: prop.x + prop.y, kind: 'prop', prop,
-    }));
+    const standing = map.props
+      .filter((prop) => prop.kind !== 'trigger')
+      .map((prop) => ({ depth: prop.x + prop.y, kind: 'prop', prop }));
     standing.push({ depth: p.gx + p.gy + 0.01, kind: 'player' });
+
+    // The rest of the line walks a few steps back along the leader's trail.
+    const line = this.game.activeParty.slice(1);
+    line.forEach((who, i) => {
+      const at = this.trail[(i + 1) * 3];
+      if (!at) return;
+      standing.push({ depth: at.x + at.y, kind: 'follower', who, at, i });
+    });
     standing.sort((a, b) => a.depth - b.depth);
 
     for (const item of standing) {
@@ -234,6 +351,14 @@ export class ExploreScene extends Scene {
         });
         continue;
       }
+      if (item.kind === 'follower') {
+        const s = toScreen(item.at.x, item.at.y, this.cell(item.at.x, item.at.y)?.z ?? 0);
+        isoShadow(r, s.x, s.y + 2, 5);
+        drawFigure(r, item.who.figure, s.x, s.y + 4, {
+          frame: this.moving ? Math.floor(this.t * 8 + item.i) % 2 : Math.floor(this.t * 1.4 + item.i) % 2,
+        });
+        continue;
+      }
       const prop = item.prop;
       const s = toScreen(prop.x, prop.y, prop.z);
       if (prop.kind === 'npc') {
@@ -241,6 +366,14 @@ export class ExploreScene extends Scene {
         isoShadow(r, s.x, s.y + 2, 6);
         drawFigure(r, spec, s.x, s.y + 4, { frame: Math.floor(this.t * 1.2 + prop.x) % 2 });
       } else {
+        // The mask is the only thing on this stair worth walking toward, and
+        // it is a pale object on pale stone in the dark. Mark it.
+        if (prop.kind === 'mask' && this.game.objective === 'THE MASK') {
+          const pulse = 0.5 + 0.5 * Math.sin(this.t * 2.4);
+          r.ellipse(s.x, s.y + 3, 12 + pulse * 2, 6 + pulse,
+            alpha(P.emberDeep, 0.20 + pulse * 0.12));
+          r.glow(s.x, s.y - 2, 8, P.ember, 0.30 + pulse * 0.16);
+        }
         drawProp(r, prop.kind, s.x, s.y + 4, {
           t: this.t, open: this.opened.has(`${prop.x},${prop.y}`),
         });
@@ -248,10 +381,55 @@ export class ExploreScene extends Scene {
     }
   }
 
+  /** How far a tile has fallen out of Zahra's lamp, 0 lit to 1 gone. Grid
+   *  distance is the right measure here: both axes project to the same screen
+   *  length, so a circle in grid space is a circle on screen. */
+  #lampDim(cell, p) {
+    if (!this.map.dark) return 0;
+    const d = Math.hypot(cell.x - p.gx, cell.y - p.gy);
+    return Math.max(0, Math.min(1, (d - 1.5) / 3.6));
+  }
+
+  #wallCache = null;
+
   #bridgePlanks(r, sx, sy) {
     for (let i = -1; i <= 1; i++) {
       r.line(sx - TW / 2 + 4, sy + i * 3, sx + TW / 2 - 4, sy + i * 3, alpha(P.void, 0.4));
     }
+  }
+
+  /** On the Quiet Stair, Zahra's lamp is the only light there is. A cached
+   *  radial dither is punched into a black screen and follows her. */
+  #drawDarkness(r, p, cam) {
+    const W = 236;
+    const H = 156;
+    // The stone has already shaded itself out by grid distance. All this mask
+    // has to do is take the props, the party line and the hanging roots with it,
+    // and close the last of it to black before the frame edge does.
+    const mask = r.cached('darkmask', W, H, (rr) => {
+      const cx = W / 2;
+      const cy = H / 2;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const d = Math.hypot((x - cx) / cx, (y - cy) / cy);
+          if (d < 0.5) continue;
+          rr.dither(x, y, 1, 1, P.void, Math.min(1, (d - 0.5) / 0.34));
+        }
+      }
+    });
+    const mx = Math.round(p.x - cam.x - W / 2);
+    const my = Math.round(p.y - cam.y - H / 2 - 8);
+    r.blit(mask, mx, my);
+    // Outside the lamp there is nothing to see, so there is nothing drawn.
+    r.rect(0, 0, r.W, Math.max(0, my), P.void);
+    r.rect(0, my + H, r.W, r.H - (my + H), P.void);
+    r.rect(0, my, Math.max(0, mx), H, P.void);
+    r.rect(mx + W, my, r.W - (mx + W), H, P.void);
+    // The flame itself. Kept small and dense: a wide, weak glow dithers down to
+    // a visible lattice of single pixels, which reads as a bug and not as light.
+    const flicker = 1 + Math.sin(this.t * 3.1) * 0.06 + Math.sin(this.t * 8.3) * 0.03;
+    r.glow(p.x - cam.x + 1, p.y - cam.y - 9, Math.round(11 * flicker), P.ember, 0.55);
+    r.glow(p.x - cam.x + 1, p.y - cam.y - 10, Math.round(4 * flicker), P.emberWhite, 0.9);
   }
 
   #drawHud(r) {
@@ -269,6 +447,17 @@ export class ExploreScene extends Scene {
     }
     r.text(lead.name, 28, 20, { color: P.stoneMid });
     r.text(`EP ${lead.ep}`, 66, 20, { color: P.emberDim });
+
+    if (this.game.objective) {
+      const label = this.game.objective;
+      const w = r.measure(label, { tracking: 1 }) + 16;
+      r.rect(4, 34, w, 12, alpha(P.void, 0.9));
+      r.frame(4, 34, w, 12, alpha(P.ember, 0.6), 1);
+      r.rect(6, 38, 3, 3, P.emberHot);
+      r.text(label, 13, 37, { color: P.emberLit, tracking: 1 });
+    }
+
+    if (this.map.dark) return;
 
     // minimap, bottom right
     const mw = 62;

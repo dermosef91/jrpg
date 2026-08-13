@@ -44,7 +44,8 @@ const PROPS = {
     r.rect(x - 4, y - 20, 8, 2, P.stone);
     r.rect(x - 4, y - 1, 8, 2, P.stoneDark);
     // shard
-    r.glow(x, y - 24, 22 * flick, P.ember, 0.45);
+    r.wash(x, y - 22, 26 * flick, 22 * flick, P.emberDeep, 0.5);
+    r.glow(x, y - 24, 9 * flick, P.ember, 0.7);
     r.poly([[x, y - 29], [x + 3, y - 24], [x, y - 19], [x - 3, y - 24]], P.emberHot);
     r.px(x, y - 24, P.emberWhite);
     for (let i = 0; i < 3; i++) r.hline(x - 5, y - 15 + i * 4, 10, alpha(P.ember, 0.3));
@@ -79,6 +80,29 @@ const PROPS = {
     }
   },
 
+  /** The Warden's mask, cracked in half, with its bell beside it. */
+  mask(r, x, y, t) {
+    r.ellipse(x, y + 1, 9, 3, alpha(P.void, 0.55));
+    // left half, fallen face-up
+    r.poly([[x - 9, y - 2], [x - 4, y - 10], [x - 1, y - 9], [x - 2, y - 1]], P.stoneLit);
+    r.poly([[x - 9, y - 2], [x - 6, y - 7], [x - 4, y - 7], [x - 5, y - 1]], P.boneWhite);
+    r.px(x - 5, y - 6, P.void);
+    // right half, further off
+    r.poly([[x + 2, y - 1], [x + 3, y - 8], [x + 8, y - 7], [x + 8, y - 1]], P.stone);
+    r.px(x + 5, y - 5, P.void);
+    // the crack between them
+    r.line(x - 1, y - 9, x + 1, y - 1, P.void);
+    // the bell, on its side, not ringing
+    r.ellipse(x + 12, y - 2, 4, 3, P.stoneDark);
+    r.ellipse(x + 12, y - 3, 3, 2, P.stoneMid);
+    r.px(x + 14, y - 1, P.stoneShadow);
+    const glint = Math.sin(t * 0.8) > 0.7;
+    if (glint) r.px(x - 6, y - 8, P.emberDim);
+  },
+
+  /** Invisible in play: a script trigger sitting on a tile. */
+  trigger() {},
+
   /** A lit doorway into a dome. */
   door(r, x, y, t) {
     r.rect(x - 11, y - 26, 22, 26, P.stoneMid);
@@ -100,7 +124,7 @@ const PROPS = {
 /** The great mosaic set into the plaza floor: a tree of ember lines. */
 export function drawPlazaMosaic(r, sx, sy, t) {
   const pulse = 0.7 + 0.3 * Math.sin(t * 0.7);
-  r.glow(sx, sy, 44, P.emberDeep, 0.18 * pulse);
+  r.wash(sx, sy, 62, 32, P.emberDeep, 0.34 * pulse);
   for (let i = 0; i < 3; i++) {
     ellipseRing(r, sx, sy, 40 - i * 12, 20 - i * 6, i === 0 ? P.ember : P.emberDeep);
   }

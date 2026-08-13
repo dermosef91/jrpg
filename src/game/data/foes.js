@@ -47,6 +47,8 @@ export const FOES = {
 };
 
 export const ENCOUNTERS = [
+  // Scripted encounters are excluded from the random table.
+  { id: 'tutorial', title: 'SOMETHING CAME UP THE STAIR', foes: ['crawler'], scripted: true, backdrop: 'stair' },
   { id: 'crawlers', title: 'THREE CRAWLERS ON THE INLAY', foes: ['crawler', 'crawler', 'crawler'] },
   { id: 'hollowed', title: 'THE HOLLOWED, STILL WALKING', foes: ['husk', 'husk'] },
   { id: 'choirpair', title: 'A CHOIR, HOLDING ITS NOTE', foes: ['choir', 'crawler'] },

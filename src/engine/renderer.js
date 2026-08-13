@@ -252,6 +252,21 @@ export class Renderer {
     }
   }
 
+  /**
+   * A soft radial wash, built from stacked translucent ellipses rather than a
+   * dither. `glow` is the right tool for a bright source, but below about a
+   * quarter coverage its Bayer pattern stops reading as light and starts
+   * reading as a lattice of loose pixels -- which is exactly the range a big
+   * ambient wash lives in.
+   */
+  wash(cx, cy, rx, ry, color, strength = 0.3, steps = 7) {
+    const a = strength / steps;
+    for (let i = steps; i >= 1; i--) {
+      const k = i / steps;
+      this.ellipse(cx, cy, rx * k, ry * k, alpha(color, a * (1.4 - k * 0.6)));
+    }
+  }
+
   /** A dithered radial glow: the only kind of light this renderer has. */
   glow(cx, cy, radius, color, strength = 1) {
     const r = Math.round(radius);

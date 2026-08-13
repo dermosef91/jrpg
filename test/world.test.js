@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMap, NPC_LINES } from '../src/game/explore/maps.js';
+import { buildMap, MAP_IDS, NPC_LINES } from '../src/game/explore/maps.js';
+import { OPENING, BEATS, BEATS_AGAIN, DESCEND_AGAIN } from '../src/game/story/prologue.js';
+import { ENCOUNTERS } from '../src/game/data/foes.js';
 import { toScreen, toGrid, TW, TH } from '../src/game/explore/iso.js';
 import { effectiveStats, EQUIPMENT, SLOTS } from '../src/game/data/equipment.js';
 import { makeParty, DEFAULT_FORMATION } from '../src/game/data/party.js';
@@ -25,38 +27,57 @@ test('elevation lifts a tile straight up the screen', () => {
 });
 
 test('every walkable tile is reachable on foot from the spawn', () => {
-  const map = buildMap();
-  assert.ok(map.walkable(map.spawn.x, map.spawn.y), 'spawn is inside a wall');
-  const seen = new Set([`${map.spawn.x},${map.spawn.y}`]);
-  const queue = [[map.spawn.x, map.spawn.y]];
-  while (queue.length) {
-    const [x, y] = queue.pop();
-    const from = map.at(x, y);
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx;
-      const ny = y + dy;
-      const key = `${nx},${ny}`;
-      const to = map.at(nx, ny);
-      if (seen.has(key) || !to?.walk) continue;
-      if (Math.abs(to.z - from.z) > 1) continue;
-      seen.add(key);
-      queue.push([nx, ny]);
+  for (const id of MAP_IDS) {
+    const map = buildMap(id);
+    assert.ok(map.walkable(map.spawn.x, map.spawn.y), `${id} spawn is inside a wall`);
+    const seen = new Set([`${map.spawn.x},${map.spawn.y}`]);
+    const queue = [[map.spawn.x, map.spawn.y]];
+    while (queue.length) {
+      const [x, y] = queue.pop();
+      const from = map.at(x, y);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        const key = `${nx},${ny}`;
+        const to = map.at(nx, ny);
+        if (seen.has(key) || !to?.walk) continue;
+        if (Math.abs(to.z - from.z) > 1) continue;
+        seen.add(key);
+        queue.push([nx, ny]);
+      }
     }
+    let walkable = 0;
+    for (const row of map.cells) for (const c of row) if (c.walk) walkable++;
+    assert.equal(seen.size, walkable, `${id}: ${walkable - seen.size} tiles are stranded`);
   }
-  let walkable = 0;
-  for (const row of map.cells) for (const c of row) if (c.walk) walkable++;
-  assert.equal(seen.size, walkable, `${walkable - seen.size} tiles are stranded`);
 });
 
 test('every prop can be walked up to, and every NPC has lines', () => {
-  const map = buildMap();
-  for (const prop of map.props) {
-    const adjacent = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]
-      .some(([dx, dy]) => map.walkable(prop.x + dx, prop.y + dy));
-    assert.ok(adjacent, `${prop.kind} at ${prop.x},${prop.y} is unreachable`);
-    if (prop.kind === 'npc') {
-      assert.ok(NPC_LINES[`${prop.x},${prop.y}`], `npc at ${prop.x},${prop.y} has no lines`);
+  for (const id of MAP_IDS) {
+    const map = buildMap(id);
+    for (const prop of map.props) {
+      const adjacent = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]
+        .some(([dx, dy]) => map.walkable(prop.x + dx, prop.y + dy));
+      assert.ok(adjacent, `${id}: ${prop.kind} at ${prop.x},${prop.y} is unreachable`);
+      if (prop.kind === 'npc') {
+        const lines = NPC_LINES[`${id}:${prop.x},${prop.y}`];
+        assert.ok(lines, `npc at ${id}:${prop.x},${prop.y} has no lines`);
+        assert.ok(lines.before?.length && lines.after?.length,
+          `npc at ${id}:${prop.x},${prop.y} needs both prologue states`);
+      }
     }
+  }
+});
+
+test('every NPC line block belongs to a real npc prop', () => {
+  const placed = new Set();
+  for (const id of MAP_IDS) {
+    for (const prop of buildMap(id).props) {
+      if (prop.kind === 'npc') placed.add(`${id}:${prop.x},${prop.y}`);
+    }
+  }
+  for (const key of Object.keys(NPC_LINES)) {
+    assert.ok(placed.has(key), `${key} has lines but nobody is standing there`);
   }
 });
 
@@ -152,5 +173,71 @@ test('the chosen touch layout always maximises the remaining stage', () => {
     const band = Math.min(vp.width / 480, (vp.height - need) / 270);
     assert.ok(plan.scale >= Math.max(side, band) - 1e-9,
       `${vp.width}x${vp.height} picked ${plan.mode} at ${plan.scale.toFixed(3)}`);
+  }
+});
+
+test('the prologue only sends the party to maps that exist', () => {
+  const maps = new Set(MAP_IDS);
+  const scripts = [OPENING, DESCEND_AGAIN,
+    ...Object.values(BEATS), ...Object.values(BEATS_AGAIN)];
+  for (const script of scripts) {
+    for (const step of script) {
+      if (!step.goTo) continue;
+      assert.ok(maps.has(step.goTo.map), `prologue walks into unknown map ${step.goTo.map}`);
+    }
+  }
+});
+
+test('every story beat is hung on a trigger that is actually placed', () => {
+  const triggers = new Set();
+  for (const id of MAP_IDS) {
+    for (const prop of buildMap(id).props) {
+      if (prop.kind === 'trigger') triggers.add(prop.id);
+    }
+  }
+  for (const key of Object.keys(BEATS)) {
+    assert.ok(triggers.has(key), `beat ${key} has no trigger tile to fire it`);
+  }
+  for (const id of triggers) {
+    assert.ok(BEATS[id], `trigger ${id} sits on the floor doing nothing`);
+  }
+  for (const key of Object.keys(BEATS_AGAIN)) {
+    assert.ok(triggers.has(key), `second-visit beat ${key} has no trigger tile`);
+    assert.ok(BEATS[key], `${key} only exists on a second visit, which cannot happen`);
+  }
+});
+
+test('the descent hands the player triggers in the order the beats are written', () => {
+  const stair = buildMap('quietstair');
+  const triggers = stair.props.filter((p) => p.kind === 'trigger');
+  const byDepth = [...triggers].sort((a, b) => a.y - b.y || a.x - b.x);
+  const numbers = byDepth.map((p) => Number(p.id.split(':')[1]));
+  assert.deepEqual(numbers, [...numbers].sort((a, b) => a - b),
+    'beats fire out of order as the party walks down');
+});
+
+test('every battle the prologue starts is a real encounter', () => {
+  const ids = new Set(ENCOUNTERS.map((e) => e.id));
+  for (const script of [OPENING, DESCEND_AGAIN,
+    ...Object.values(BEATS), ...Object.values(BEATS_AGAIN)]) {
+    for (const step of script) {
+      if (!step.battle) continue;
+      assert.ok(ids.has(step.battle.encounter), `unknown encounter ${step.battle.encounter}`);
+      const enc = ENCOUNTERS.find((e) => e.id === step.battle.encounter);
+      assert.ok(enc.scripted || enc.boss,
+        `${enc.id} is fired by the story but can also turn up at random`);
+    }
+  }
+});
+
+test('the scripted opening never leaves the player without a fade back in', () => {
+  for (const [name, script] of [['OPENING', OPENING],
+    ...Object.entries(BEATS), ...Object.entries(BEATS_AGAIN)]) {
+    let dark = false;
+    for (const step of script) {
+      if (step.fade === 'out') dark = true;
+      if (step.fade === 'in') dark = false;
+    }
+    assert.equal(dark, false, `${name} ends with the screen still black`);
   }
 });

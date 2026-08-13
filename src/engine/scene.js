@@ -18,6 +18,22 @@ export class SceneStack {
     return scene;
   }
 
+  /** Swap the scene directly beneath the top one. Used when a cutscene changes
+   *  maps: the director stays in control while the world underneath it changes. */
+  replaceUnderTop(scene) {
+    scene.game = this.game;
+    // Nothing on top means there is nothing to slide underneath: this is just
+    // a replace. Without the guard the new scene ends up buried.
+    if (this.#stack.length < 2) return this.replace(scene);
+    const top = this.#stack.pop();
+    const under = this.#stack.pop();
+    under?.exit?.();
+    this.#stack.push(scene);
+    scene.enter?.();
+    if (top) this.#stack.push(top);
+    return scene;
+  }
+
   replace(scene) {
     while (this.#stack.length) this.#stack.pop()?.exit?.();
     return this.push(scene);

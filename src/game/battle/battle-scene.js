@@ -29,10 +29,14 @@ const RES_COLOR = {
 };
 
 export class BattleScene extends Scene {
-  constructor({ party, foes, title, seed = 7, onEnd = null }) {
+  constructor({ party, foes, title, seed = 7, onEnd = null, tutorial = null, backdrop = 'low' }) {
     super();
     this.battle = new Battle({ party, foes, title, seed });
     this.onEnd = onEnd;
+    this.tutorial = tutorial;
+    this.backdrop = backdrop;
+    this.teachCard = null;
+    this.taught = false;
     this.t = 0;
     this.state = 'command';
     this.wait = 0;
@@ -111,6 +115,14 @@ export class BattleScene extends Scene {
     this.game.renderer.shakeX *= 0.85;
     this.game.renderer.shakeY *= 0.85;
 
+    // A teaching card holds the whole battle until it is dismissed.
+    if (this.teachCard) {
+      if (this.input.pressed('confirm') || this.input.pressed('cancel')) {
+        this.audio?.play('confirm');
+        this.teachCard = null;
+      }
+      return;
+    }
     if (this.hitstop > 0) { this.hitstop -= dt; return; }
     if (this.wait > 0) { this.wait -= dt; return; }
 
@@ -280,6 +292,12 @@ export class BattleScene extends Scene {
           const color = RES_COLOR[e.resonance] ?? P.stoneLit;
           this.#popup(e.unit, `${e.amount}`, color, e.resonance === 'resonant' ? 2 : 1);
           this.audio?.play(e.resonance === 'resonant' ? 'crit' : 'hit');
+          // The first resonant hit of the tutorial is where the rule is taught,
+          // right after the player has felt it rather than before.
+          if (e.resonance === 'resonant' && this.tutorial?.card && !this.taught) {
+            this.taught = true;
+            this.teachCard = this.tutorial.card;
+          }
           if (e.resonance === 'resonant') {
             this.#popup(e.unit, 'RESONANT', P.emberWhite, 0, 16);
             this.hitstop = 0.09;
@@ -352,14 +370,51 @@ export class BattleScene extends Scene {
 
   draw(r) {
     r.begin(P.void);
-    drawArena(r, { t: this.t });
+    drawArena(r, { t: this.t, kind: this.backdrop });
     this.#drawUnits(r);
     if (this.flash > 0) r.dither(0, 0, r.W, FLOOR_Y + 60, P.emberWhite, this.flash * 0.35);
     this.#drawPopups(r);
     this.#drawTopBar(r);
     this.#drawCommandPanel(r);
     this.#drawPartyPanel(r);
+    if (this.tutorial?.hint && !this.battle.over) this.#drawHint(r);
     if (this.state === 'over') this.#drawOutcome(r);
+    if (this.teachCard) this.#drawTeach(r, this.teachCard);
+  }
+
+  #drawHint(r) {
+    const label = this.tutorial.hint;
+    const w = r.measure(label, { tracking: 1 }) + 16;
+    const x = (r.W - w) >> 1;
+    const blink = Math.sin(this.t * 4) > -0.4;
+    // Kept up under the title rather than over the line: a prompt sitting on top
+    // of the fight is the first thing a player learns to stop reading.
+    const y = 22;
+    r.rect(x, y, w, 12, alpha(P.void, 0.92));
+    r.frame(x, y, w, 12, blink ? P.emberBright : P.emberDeep, 1);
+    r.text(label, r.W / 2, y + 3, {
+      color: blink ? P.boneWhite : P.emberLit, align: 'center', tracking: 1,
+    });
+  }
+
+  #drawTeach(r, card) {
+    // A flat wash, not a dithered one: a 4x4 Bayer scrim at two thirds coverage
+    // turns every pixel behind the card into static.
+    r.rect(0, 0, r.W, r.H, alpha(P.void, 0.84));
+    const w = 300;
+    const lines = r.wrap(card.body, w - 28);
+    const h = 34 + lines.length * 10;
+    const x = (r.W - w) >> 1;
+    const y = (r.H - h) >> 1;
+    panel(r, x, y, w, h, { fill: P.black, accent: P.emberBright });
+    r.rect(x + 1, y + 1, w - 2, 12, alpha(P.ember, 0.2));
+    r.text(card.title, x + w / 2, y + 4, { color: P.emberHot, align: 'center', tracking: 2 });
+    lines.forEach((line, i) => {
+      r.text(line, x + 14, y + 20 + i * 10, { color: P.stoneLit });
+    });
+    if (Math.sin(this.t * 5) > -0.3) {
+      r.text('ENTER', x + w / 2, y + h - 10, { color: P.boneWhite, align: 'center', tracking: 2 });
+    }
   }
 
   #drawUnits(r) {

@@ -56,6 +56,20 @@ const shot = async (page, name) => {
   await page.waitForTimeout(200);
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
+/** Advance whatever cutscene is on top until the player has the field back. */
+const skipScript = async (page, budget = 160) => {
+  let lines = 0;
+  for (let i = 0; i < budget; i++) {
+    const scene = await page.evaluate(() => window.__game?.scenes?.top?.constructor?.name);
+    if (scene === 'ExploreScene') return { reached: true, lines, scene };
+    lines += 1;
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(110);
+  }
+  const scene = await page.evaluate(() => window.__game?.scenes?.top?.constructor?.name);
+  return { reached: false, lines, scene };
+};
+
 const hold = async (page, key, ms) => {
   await page.keyboard.down(key);
   await page.waitForTimeout(ms);
@@ -73,24 +87,39 @@ console.log('\nscenes');
 
   await page.keyboard.press('Enter');
   await page.waitForTimeout(900);
-  const inWorld = await page.evaluate(() => window.__game?.scenes?.top?.constructor?.name);
-  if (inWorld !== 'ExploreScene') fail('title', `expected ExploreScene, got ${inWorld}`);
-  else ok('title -> world');
+  const opened = await skipScript(page);
+  if (!opened.reached) fail('title', `never reached the field, stuck in ${opened.scene}`);
+  else ok(`title -> opening -> field (${opened.lines} scripted lines)`);
+  const startedOn = await page.evaluate(() => window.__game.field?.mapId);
+  if (startedOn !== 'quietstair') fail('opening', `the prologue starts on ${startedOn}`);
+  else ok('the opening puts the party on the Quiet Stair');
   await shot(page, '02-explore');
 
   // Walking must actually move the party through the isometric grid.
   const before = await page.evaluate(() => {
-    const s = window.__game.scenes.top;
+    const s = window.__game.field;
     return { x: s.px, y: s.py };
   });
-  await hold(page, 'ArrowUp', 500);
-  await hold(page, 'ArrowLeft', 400);
+  // The prologue starts at the top of a stair, so no single direction is
+  // guaranteed to be open. Try each in turn until the party takes a step.
+  for (const key of ['ArrowDown', 'ArrowRight', 'ArrowLeft', 'ArrowUp']) {
+    await hold(page, key, 320);
+    const now = await page.evaluate(() => {
+      const s = window.__game.field;
+      return { x: s.px, y: s.py };
+    });
+    if (now.x !== before.x || now.y !== before.y) break;
+  }
   const after = await page.evaluate(() => {
-    const s = window.__game.scenes.top;
+    const s = window.__game.field;
     return { x: s.px, y: s.py };
   });
   if (before.x === after.x && before.y === after.y) fail('explore', 'the party never moved');
   else ok(`explore movement (${before.x},${before.y} -> ${after.x},${after.y})`);
+
+  // Walking into a story beat is expected on the stair; clear it before asking
+  // for the menu, which the field only opens when it is the scene on top.
+  await skipScript(page);
 
   // Menu
   await page.keyboard.press('KeyC');
@@ -162,6 +191,7 @@ for (const v of VIEWPORTS) {
   const { page, errors } = await open(context);
   await page.keyboard.press('Enter');
   await page.waitForTimeout(700);
+  await skipScript(page);
 
   const info = await page.evaluate(() => {
     const box = document.querySelector('canvas').getBoundingClientRect();
@@ -194,14 +224,14 @@ for (const v of VIEWPORTS) {
 
   if (v.touch && !v.portrait) {
     const before = await page.evaluate(() => {
-      const s = window.__game.scenes.top;
+      const s = window.__game.field;
       return { x: s.px, y: s.py };
     });
     const box = await page.locator('.touch-key[data-action="right"]').boundingBox();
     await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
     await page.waitForTimeout(300);
     const after = await page.evaluate(() => {
-      const s = window.__game.scenes.top;
+      const s = window.__game.field;
       return { x: s.px, y: s.py };
     });
     if (before.x === after.x && before.y === after.y) fail(v.name, 'the d-pad did not move the party');

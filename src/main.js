@@ -14,6 +14,8 @@ import { makeParty, DEFAULT_FORMATION } from './game/data/party.js';
 import { STARTING_INVENTORY } from './game/data/items.js';
 import { STARTING_SHARDS } from './game/data/shards.js';
 import { ENCOUNTERS, getFoe } from './game/data/foes.js';
+import { Director } from './game/story/director.js';
+import { OPENING, BEATS, BEATS_AGAIN, DESCEND_AGAIN } from './game/story/prologue.js';
 
 export async function boot(bootEl) {
   const canvas = document.createElement('canvas');
@@ -53,6 +55,12 @@ class Game {
     this.inventory = STARTING_INVENTORY.map((e) => ({ ...e }));
     this.shards = { ...STARTING_SHARDS };
     this.muteFlash = 0;
+    this.flags = new Set();
+    // Story beats fire once per run, not once per time a map is loaded.
+    this.firedTriggers = new Set();
+    this.objective = null;
+    this.encountersOff = false;
+    this.field = null;
 
     const wake = () => this.audio.resume();
     for (const evt of ['keydown', 'pointerdown']) {
@@ -94,17 +102,68 @@ class Game {
     r.text(label, r.W - w / 2 - 4, 7, { color: P.emberLit, align: 'center', tracking: 1 });
   }
 
+  /** Start the prologue. The world scene is loaded lazily so the title appears
+   *  instantly, then the opening script takes it from there. */
   enterWorld() {
-    // The exploration scene is loaded lazily so the title can appear instantly.
     import('./game/explore/explore-scene.js').then(({ ExploreScene }) => {
-      this.scenes.replace(new ExploreScene());
+      this.ExploreScene = ExploreScene;
+      this.field = this.scenes.replace(new ExploreScene({ mapId: 'rootplaza' }));
+      this.runScript(OPENING);
     });
   }
 
-  startBattle(encounterId = null) {
+  runScript(script, onEnd = null) {
+    this.scenes.push(new Director(script, { field: this.field, onEnd }));
+  }
+
+  goToMap(mapId, spawn = null) {
+    if (!this.ExploreScene) return null;
+    this.field = new this.ExploreScene({ mapId, spawn });
+    // The director sits on top of the field, so swap the field underneath it.
+    this.scenes.replaceUnderTop(this.field);
+    return this.field;
+  }
+
+  setObjective(text) { this.objective = text || null; }
+
+  /** A trigger tile was stepped on. Returns true if a script took over. */
+  fireTrigger(id) {
+    const beat = (this.flags.has('reported') ? BEATS_AGAIN[id] : null) ?? BEATS[id];
+    if (!beat) return false;
+    this.runScript(beat);
+    return true;
+  }
+
+  /** Walking into the Quiet Stair door from Rootplaza. */
+  descend() {
+    if (!this.flags.has('sawTheMask')) {
+      this.runScript([
+        { say: 'ZAHRA', text: 'We have already been down. Report it first -- the Gate Hand is waiting.' },
+      ]);
+      return;
+    }
+    if (this.flags.has('reported')) {
+      // Back down, but only the last flight of it: the player has walked the
+      // long way once already and does not need to walk it again to be scared.
+      this.firedTriggers.delete('quietstair:6');
+      this.runScript([
+        { fade: 'out', time: 0.8 },
+        { goTo: { map: 'quietstair', spawn: { x: 2, y: 16 } } },
+        { call: (game) => { game.encountersOff = true; } },
+        { fade: 'in', time: 1.0 },
+        ...DESCEND_AGAIN,
+      ]);
+      return;
+    }
+    this.runScript([
+      { say: 'KOFI', text: 'Report first. Then we go back down with something better than one lamp.' },
+    ]);
+  }
+
+  startBattle(encounterId = null, { tutorial = null, onEnd = null } = {}) {
     const spec = encounterId
       ? ENCOUNTERS.find((e) => e.id === encounterId) ?? this.rng.pick(ENCOUNTERS)
-      : this.rng.pick(ENCOUNTERS.filter((e) => !e.boss));
+      : this.rng.pick(ENCOUNTERS.filter((e) => !e.boss && !e.scripted));
     const counts = new Map();
     const foes = spec.foes.map((id) => {
       const n = (counts.get(id) ?? 0) + 1;
@@ -115,6 +174,8 @@ class Game {
     const party = this.activeParty.map(heroUnit);
     this.scenes.push(new BattleScene({
       party, foes, title: spec.title, seed: this.rng.int(1, 1e6),
+      backdrop: spec.backdrop ?? (this.field?.map?.dark ? 'stair' : 'low'),
+      tutorial, onEnd,
     }));
   }
 

@@ -36,9 +36,13 @@ export function tileDiamond(sx, sy) {
  * Paint one floor tile: a bone diamond with a darker rim, side walls dropping
  * to the void, and optional ember inlay across the face.
  */
-export function drawTile(r, sx, sy, def, { inlay = 0, lit = 1, drop = 3 } = {}) {
-  const top = def.top ?? P.stone;
-  const topLit = mix(top, P.boneWhite, 0.22 * lit);
+export function drawTile(r, sx, sy, def, { inlay = 0, lit = 1, drop = 3, dim = 0 } = {}) {
+  // `dim` is how far this tile has fallen out of the lamp. Shading the stone
+  // itself, rather than only laying black over it, is what makes a lit pool
+  // read as light falling on rock instead of a hole cut in a picture.
+  const base = dim > 0 ? mix(def.top ?? P.stone, P.void, dim * 0.88) : (def.top ?? P.stone);
+  const top = base;
+  const topLit = mix(top, P.boneWhite, 0.22 * lit * (1 - dim));
   const topDark = mix(top, P.void, 0.3);
 
   // side walls first, so the top edge covers their seam
@@ -61,19 +65,23 @@ export function drawTile(r, sx, sy, def, { inlay = 0, lit = 1, drop = 3 } = {}) 
     [sx, sy - TH / 2], [sx + TW / 2, sy], [sx, sy], [sx - TW / 2, sy],
   ], topLit);
   // rim
-  r.line(sx - TW / 2, sy, sx, sy - TH / 2, mix(topLit, P.boneWhite, 0.4));
-  r.line(sx, sy - TH / 2, sx + TW / 2, sy, mix(topLit, P.boneWhite, 0.2));
+  r.line(sx - TW / 2, sy, sx, sy - TH / 2, mix(topLit, P.boneWhite, 0.4 * (1 - dim)));
+  r.line(sx, sy - TH / 2, sx + TW / 2, sy, mix(topLit, P.boneWhite, 0.2 * (1 - dim)));
   r.line(sx + TW / 2, sy, sx, sy + TH / 2, topDark);
   r.line(sx, sy + TH / 2, sx - TW / 2, sy, topDark);
 
-  if (inlay) drawInlay(r, sx, sy, inlay);
+  if (inlay && dim < 0.92) drawInlay(r, sx, sy, inlay, def.dead, dim);
 }
 
 /** Ember channels cut into the stone. Patterns are indexed, not random, so a
  *  path of inlay reads as continuous when tiles sit next to each other. */
-export function drawInlay(r, sx, sy, kind) {
-  const c = P.ember;
-  const hot = P.emberBright;
+export function drawInlay(r, sx, sy, kind, dead = false, dim = 0) {
+  // Dead seam: the channel is still cut, but nothing is running through it.
+  // A dead channel is still a channel: cut into the stone, and empty. Drawn
+  // near-black so "the seam is out" is something the player sees before anyone
+  // says it out loud.
+  const c = mix(dead ? mix(P.stoneShadow, P.void, 0.55) : P.ember, P.void, dim * 0.88);
+  const hot = mix(dead ? P.void : P.emberBright, P.void, dim * 0.88);
   switch (kind) {
     case 1: // straight, north-east to south-west
       r.line(sx - TW / 2 + 2, sy, sx + TW / 2 - 2, sy, c);
