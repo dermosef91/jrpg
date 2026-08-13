@@ -21,6 +21,8 @@ No chosen one. No macguffin. No final boss.
 ```sh
 npm start        # http://localhost:8080
 npm test         # 45 tests, no dependencies
+npm run build    # assemble the deployable site into _site/
+npm run smoke    # drive every scene in a real browser (needs Playwright, see below)
 ```
 
 No build step and no dependencies — ES modules, canvas, and a 40-line static server
@@ -78,6 +80,28 @@ show this much small type sideways.
 
 Small phones (≈667×375 landscape) work but are cramped; the type is legible and no UI is
 hidden, but a larger screen is much better.
+
+## Deployment
+
+`.github/workflows/deploy.yml` publishes to GitHub Pages on every push: it runs the
+tests, assembles `_site/` (just `index.html` and `src/` — the tests, tooling and setting
+bible are not published), and deploys. A failing test blocks the publish.
+
+`.github/workflows/ci.yml` runs the unit tests on Node 20 and 22, then a headless
+Chromium smoke pass over the built artifact — every scene, plus the touch layout across
+five viewports — uploading the screenshots as a build artifact.
+
+The browser smoke test needs Playwright, which is deliberately not a dependency of the
+game:
+
+```sh
+npm install --no-save playwright && npx playwright install chromium
+npm run smoke -- --root _site --shots shots
+```
+
+**One-time setup:** Pages has to be turned on in the repository — Settings → Pages →
+Build and deployment → Source → **GitHub Actions**. Until that is set, the deploy job
+fails at the last step.
 
 ## Layout
 

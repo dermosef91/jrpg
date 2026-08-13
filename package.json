@@ -6,7 +6,11 @@
   "type": "module",
   "scripts": {
     "start": "node tools/serve.mjs",
-    "test": "node --test test/*.test.js"
+    "build": "node tools/build-site.mjs",
+    "test": "node --test test/*.test.js",
+    "smoke": "node test/browser/smoke.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

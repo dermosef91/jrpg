@@ -1,9 +1,12 @@
 // Minimal static server. ES modules need http(s), not file://.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, normalize, join } from 'node:path';
+import { extname, normalize, join, resolve, sep } from 'node:path';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+// Serve the repo during development, or a built site when one is named --
+// CI smokes the artifact it is about to publish rather than the sources.
+const REPO = new URL('..', import.meta.url).pathname;
+const ROOT = resolve(REPO, process.env.SITE_ROOT ?? process.argv[2] ?? '.') + sep;
 const PORT = Number(process.env.PORT ?? 8080);
 
 const TYPES = {
@@ -35,5 +38,5 @@ createServer(async (req, res) => {
     res.writeHead(404).end('not found');
   }
 }).listen(PORT, () => {
-  console.log(`Second Harvest — http://localhost:${PORT}`);
+  console.log(`Second Harvest — http://localhost:${PORT}  (serving ${ROOT})`);
 });
