@@ -8,6 +8,7 @@ const BINDINGS = {
   Enter: 'confirm', Space: 'confirm', KeyZ: 'confirm',
   Escape: 'cancel', KeyX: 'cancel', Backspace: 'cancel',
   Tab: 'detail', KeyE: 'detail',
+  KeyM: 'mute',
 };
 
 export class Input {

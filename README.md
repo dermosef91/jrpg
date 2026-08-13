@@ -20,7 +20,7 @@ No chosen one. No macguffin. No final boss.
 
 ```sh
 npm start        # http://localhost:8080
-npm test         # 45 tests, no dependencies
+npm test         # 61 tests, no dependencies
 npm run build    # assemble the deployable site into _site/
 npm run smoke    # drive every scene in a real browser (needs Playwright, see below)
 ```
@@ -68,6 +68,39 @@ drags behind it for its whole migration history — are simultaneously the road 
 and the archaeology, which is the map-level version of the game's whole theme: the
 written record can be edited, so you navigate by scars.
 
+## Art direction
+
+**"Lantern-lit woodcut."** The Ember is a dying variable star, so the whole game
+is drawn by one rule: light is scarce, low and amber, and everything it does not
+reach falls into cold blue shade. No neutral grey anywhere.
+
+Everything is geometry — no sprites, no asset files. Rings, grain, bark, light
+pools, people and props are all drawn, which suits a world made of wood and keeps
+the build under 200 kB.
+
+- **The world is grounded, not diagrammed.** Solid tiles have height and cast
+  occlusion; people have shoulders, coats and a walk; crates, barrels, planters
+  and lamp posts sit where somebody left them. Opponents are what they actually
+  are — a graft that kept growing, a lesion of structural rot, a person with a
+  writ — never abstract shapes.
+- **Mechanics are diegetic overlays.** Grain is drawn *on* the opponent as an
+  auditor's reading overlay, fibre lines and a dial. An unread opponent gets no
+  overlay at all, which is what makes spending a turn on Read worth it.
+- **Type does two jobs.** A print serif for what the world says about itself,
+  monospace for anything an auditor would have typed.
+- **Motion and impact.** Grain rotation tweens through its 45°, attackers shove
+  toward what they hit, and hits land with hit-stop, directional shake, a screen
+  flash and a particle burst chosen by the Grain relation.
+- **Sound is procedural.** WebAudio, no samples. Wood, not metal — nothing rings
+  brightly except sunwood and a maturing graft. `m` mutes.
+
+The post chain (bloom, warm/cold grade, paper grain) auto-degrades on slow
+devices, and the look does not depend on it: the lighting is drawn into the
+scene, not added afterwards.
+
+Full detail in
+[`docs/worldbuilding/08-art-direction.md`](docs/worldbuilding/08-art-direction.md).
+
 ## Mobile
 
 The stage is a fixed 960×540 scaled to fit. On touch devices, on-screen controls are
@@ -107,13 +140,15 @@ fails at the last step.
 
 ```
 docs/worldbuilding/   the setting bible — start at 00-design-principles.md
-src/engine/           loop, input, scene stack, canvas renderer, seeded RNG, touch
+src/engine/           loop, input, scene stack, renderer, post-processing, palette,
+                      particles, procedural audio, seeded RNG, touch controls
 src/game/battle/      Grain / Graft / Sap / Scar engine, and its UI
 src/game/audit/       ring generation, variance analysis, the audit minigame
-src/game/world/       tile-map field scene, the Braid, Cordwain's three tiers
+src/game/world/       tile-map field scene, figure rendering, the Braid, Cordwain
 src/game/data/        the circuit, and what fights you
 test/                 pure-logic tests: grain maths, battle rules, ring forensics,
-                      map reachability, touch layout
+                      map reachability, touch layout, palette ramps, particles
+test/browser/         headless Chromium smoke over every scene and five viewports
 ```
 
 Rendering is geometric rather than sprite-based — rings, grain lines and panels are

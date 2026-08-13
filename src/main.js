@@ -3,6 +3,8 @@ import { Input } from './engine/input.js';
 import { SceneStack } from './engine/scene.js';
 import { runLoop } from './engine/loop.js';
 import { installTouchControls, isTouchDevice } from './engine/touch.js';
+import { Audio } from './engine/audio.js';
+import { Particles } from './engine/particles.js';
 import { makeRng } from './engine/rng.js';
 
 import { TitleScene } from './game/title-scene.js';
@@ -13,6 +15,7 @@ import { AuditScene } from './game/audit/audit-scene.js';
 import { DialogueScene } from './game/ui/dialogue.js';
 import { makeParty } from './game/data/cast.js';
 import { rollEncounter } from './game/data/foes.js';
+import { P } from './engine/palette.js';
 
 export async function boot(bootEl) {
   const canvas = document.createElement('canvas');
@@ -49,17 +52,53 @@ class Game {
     this.rng = makeRng(20240812);
     this.auditsFiled = 0;
     this.field = null;
+    this.time = 0;
+    this.audio = new Audio();
+    this.particles = new Particles();
+    this.muteFlash = 0;
+
+    // Audio cannot start until the player has interacted with the page.
+    const wake = () => this.audio.resume();
+    for (const evt of ['keydown', 'pointerdown']) {
+      window.addEventListener(evt, wake, { once: true });
+    }
   }
 
   start() {
     this.scenes.push(new TitleScene(() => this.goTo('braid')));
     runLoop({
       update: (dt) => {
+        this.time += dt;
+        if (this.input.pressed('mute')) {
+          this.audio.resume();
+          this.muteFlash = 1.6;
+          this.audio.toggleMute();
+          if (!this.audio.muted) this.audio.play('confirm');
+        }
+        this.muteFlash = Math.max(0, this.muteFlash - dt);
+        this.particles.update(dt);
         this.scenes.update(dt);
         this.input.endFrame();
       },
-      draw: (alpha) => this.scenes.draw(this.renderer, alpha),
+      draw: (alpha) => {
+        this.scenes.draw(this.renderer, alpha);
+        // Each scene grades its own frame: the field is warm and hazy, a battle
+        // is contrastier, the audit bench is a cold clean desk lamp.
+        if (this.muteFlash > 0) this.#drawMuteToast(this.renderer);
+        this.renderer.grade = this.scenes.top?.grade ?? {};
+        this.renderer.present(this.time);
+      },
     });
+  }
+
+  #drawMuteToast(r) {
+    const text = this.audio.muted ? 'sound off' : 'sound on';
+    const w = r.measure(text, 12) + 34;
+    r.save();
+    r.alpha(Math.min(1, this.muteFlash / 0.4));
+    r.panel(r.W - w - 16, 16, w, 30, { accent: P.sunwood });
+    r.text(text, r.W - w / 2 - 16, 36, { size: 12, color: P.pale, align: 'center' });
+    r.restore();
   }
 
   goTo(mapId, spawn = null) {

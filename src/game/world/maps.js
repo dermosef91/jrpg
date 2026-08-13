@@ -1,21 +1,44 @@
-import { P } from '../../engine/palette.js';
+import { RAMP } from '../../engine/palette.js';
 
 // Tile art is authored loosely and padded by makeMap, and entities are placed by
 // marker characters embedded in the art rather than by hand-counted coordinates.
 
 const LEGEND = {
-  ' ': { solid: true, color: P.void },
-  '.': { solid: false, color: '#2b2620', speck: '#3a332a' },
-  ',': { solid: false, color: '#3b3026', grain: true, grainColor: '#4a3c2d', angle: -0.1 },
-  '"': { solid: false, color: '#26301f', speck: '#33421f' },
-  ':': { solid: false, color: '#332b22', speck: '#443a2c' },
-  '=': { solid: false, color: '#4a3728', grain: true, grainColor: '#5d4632', angle: 0.9 },
-  '~': { solid: true, color: '#23343d', edge: '#2d4450' },
-  '#': { solid: true, color: '#241c17', grain: true, grainColor: '#33271f' },
-  'T': { solid: true, color: '#3a2c20', grain: true, grainColor: '#55402d', angle: 1.35 },
-  '%': { solid: true, color: '#2e2823', speck: '#3d352c' },
-  'o': { solid: true, color: '#2b2620', speck: P.sunwood },
-  '^': { solid: false, color: '#4a3728', edge: '#6b5138' },
+  ' ': { solid: true, color: RAMP.bark[0] },
+  // Braid soil: dry, over-farmed, faintly speckled with spoil.
+  '.': {
+    solid: false, color: '#241d17', shade: '#2a221a', speck: RAMP.wood[2],
+  },
+  // A Trace: the furrow a root-crown dragged. Grain runs along the direction of travel.
+  ',': {
+    solid: false, color: '#33281e', shade: '#3a2d22', grain: true,
+    grainColor: RAMP.wood[2], angle: -0.06, spacing: 9, speck: RAMP.wood[3],
+  },
+  '"': { solid: false, color: '#1d2617', shade: '#222b1a', speck: RAMP.sap[2], tuft: true },
+  ':': { solid: false, color: '#2b241c', shade: '#312921', speck: RAMP.wood[1], tuft: true },
+  // Deck boards, laid across the canopy.
+  '=': {
+    solid: false, color: '#312517', shade: '#3a2c1c', grain: true, planks: true,
+    grainColor: RAMP.wood[4], angle: 1.45, spacing: 5,
+  },
+  '~': { solid: true, color: '#132029', shade: '#172632', wave: true, bank: true },
+  // Timber wall. Blocks have height, which is most of what makes the world read
+  // as a place you are standing in rather than a plan drawn on paper.
+  '#': {
+    solid: true, height: 22, floor: '=', color: '#2a1d12', shade: '#332416', grain: true,
+    grainColor: RAMP.bark[4], spacing: 5, angle: 1.5, planks: true,
+  },
+  // Living trunk: heavy vertical grain, warmer than dead timber.
+  // Living trunk: tall, heavy vertical grain, warmer than dead timber.
+  'T': {
+    solid: true, trunk: true, height: 46, floor: '.', color: '#3a2a1c', shade: '#48331f', grain: true,
+    grainColor: RAMP.wood[4], angle: 1.5, spacing: 4,
+  },
+  '%': { solid: true, height: 13, floor: '.', color: '#332b24', shade: '#3d342b', speck: RAMP.wood[1] },
+  // A sunwood lamp. Emitting tiles are collected once and lit every frame.
+  // A standing sunwood lamp on a stub post.
+  'o': { solid: true, height: 26, floor: '=', color: '#2a2016', shade: '#33271b', lamp: true },
+  '^': { solid: false, color: '#43331f', planks: true, grain: true },
 };
 
 function makeMap(spec) {
@@ -29,7 +52,7 @@ function makeMap(spec) {
       const marker = spec.markers?.[ch];
       if (marker) {
         entities.push({ ...marker, x, y });
-        out += marker.under ?? '.';
+        out += marker.under ?? spec.floor ?? '.';
       } else {
         out += ch;
       }
@@ -52,8 +75,19 @@ export const BRAID = makeMap({
   subtitle: 'eleven generations of overlapping Traces',
   spawn: { x: 12, y: 14 },
   encounterRate: 0.085,
+  ambient: 'field',
+  motes: 'mote',
+  moteRate: 0.14,
+  grade: { bloom: 0.55, vignette: 0.88, grain: 0.05, warmth: 0.6 },
   fill: '"',
+  floor: '.',
   markers: {
+    'a': { kind: 'prop', prop: 'crate', solid: true },
+    'b': { kind: 'prop', prop: 'barrel', solid: true },
+    'c': { kind: 'prop', prop: 'sack', solid: true },
+    'd': { kind: 'prop', prop: 'planter', solid: true },
+    'e': { kind: 'prop', prop: 'rail', solid: true },
+    'f': { kind: 'prop', prop: 'post', solid: true },
     '1': {
       kind: 'exit', to: 'cordwain_mid', label: 'Cordwain', under: '=',
       spawn: { x: 13, y: 13, facing: 'up' },
@@ -97,7 +131,7 @@ export const BRAID = makeMap({
     '"....##=1##..........""""""..,,,,,,,""""',
     '"....======.........."""""..,,,,,,,"""""',
     ',,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,',
-    ',,,,,,,,,,,,,,2,,,,,,,,,,,,,,,,,,,,,,,,,',
+    ',,,,,,,f,,,,,,2,,,,,,,,,,,,,,,,,,,,f,,,,',
     ',,,,,,,,,,,,,,,,,,,,,,,3,,,,,,,,,,,,,,,,',
     ',,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,',
     '::::::::::::::::::::::::::::::::::::::::',
@@ -114,11 +148,22 @@ export const BRAID = makeMap({
 
 export const CORDWAIN_MID = makeMap({
   id: 'cordwain_mid',
+  floor: '=',
   name: 'Cordwain — Mid',
   subtitle: 'the working city; three council seats it cannot afford',
   spawn: { x: 13, y: 13 },
+  ambient: 'town',
+  motes: 'mote',
+  moteRate: 0.2,
+  grade: { bloom: 0.6, vignette: 0.92, grain: 0.05, warmth: 0.66 },
   fill: ' ',
   markers: {
+    'a': { kind: 'prop', prop: 'crate', solid: true },
+    'b': { kind: 'prop', prop: 'barrel', solid: true },
+    'c': { kind: 'prop', prop: 'sack', solid: true },
+    'd': { kind: 'prop', prop: 'planter', solid: true },
+    'e': { kind: 'prop', prop: 'rail', solid: true },
+    'f': { kind: 'prop', prop: 'post', solid: true },
     '1': { kind: 'exit', to: 'braid', label: 'down to ground', under: '=', spawn: { x: 12, y: 9, facing: 'down' } },
     '2': { kind: 'exit', to: 'cordwain_root', label: 'Root', under: '=', spawn: { x: 20, y: 4, facing: 'down' } },
     '3': { kind: 'exit', to: 'cordwain_crown', label: 'Crown', under: '=', spawn: { x: 15, y: 11, facing: 'down' } },
@@ -151,15 +196,15 @@ export const CORDWAIN_MID = makeMap({
     '     ##################       ',
     '     #================#       ',
     '     #==####====####==#       ',
-    '     #==#..#====#..#==#       ',
+    '     #==#o.#====#.o#==#       ',
     '  ####==####====####==####    ',
-    '  #==================2===#    ',
-    '  #==####==========####==#    ',
-    '  #==#TT#====5=====#TT#==#    ',
-    '  #==#TT#==========#TT#==#    ',
-    '  #==#TT#===4======#TT#==#    ',
-    '  #==####==========####==#    ',
-    '  #======6==============3#    ',
+    '  #=a================2===#    ',
+    '  #==####===f======####==#    ',
+    '  #==#TT#====5=====#TT#=d#    ',
+    '  #b=#TT#==========#TT#==#    ',
+    '  #a=#TT#===4======#TT#==#    ',
+    '  #==####==========####=d#    ',
+    '  #=d====6==============3#    ',
     '  ####==================##    ',
     '     #========1=========#     ',
     '     ####################     ',
@@ -170,11 +215,23 @@ export const CORDWAIN_MID = makeMap({
 
 export const CORDWAIN_ROOT = makeMap({
   id: 'cordwain_root',
+  floor: '=',
   name: 'Cordwain — Root',
   subtitle: 'sheltered, stable, and permanently shaded',
   spawn: { x: 20, y: 4 },
+  ambient: 'town',
+  motes: 'mote',
+  moteRate: 0.05,
+  // Root sees no direct light: cooler, darker, and almost nothing blooms.
+  grade: { bloom: 0.35, vignette: 1, grain: 0.06, warmth: 0.18 },
   fill: ' ',
   markers: {
+    'a': { kind: 'prop', prop: 'crate', solid: true },
+    'b': { kind: 'prop', prop: 'barrel', solid: true },
+    'c': { kind: 'prop', prop: 'sack', solid: true },
+    'd': { kind: 'prop', prop: 'planter', solid: true },
+    'e': { kind: 'prop', prop: 'rail', solid: true },
+    'f': { kind: 'prop', prop: 'post', solid: true },
     '1': { kind: 'exit', to: 'cordwain_mid', label: 'up to Mid', under: '=', spawn: { x: 20, y: 5, facing: 'down' } },
     '2': {
       kind: 'npc', name: 'Organizer', color: '#7c9a5e', under: '=',
@@ -208,14 +265,14 @@ export const CORDWAIN_ROOT = makeMap({
   },
   tiles: [
     '  ####################      ',
-    '  #==================#      ',
+    '  #=c==============c#      ',
     '  #==####======####==#      ',
     '  #==#TT#==4===#TT#==#      ',
     '  #==#TT#======#TT#==1##    ',
     '  #==####======####===#     ',
-    '  #==================#      ',
+    '  #=c==============c#      ',
     '  #===2=========3====#      ',
-    '  #==================#      ',
+    '  #=cc===f========ee#      ',
     '  #~~~~~~~~~~~~~~~~~~#      ',
     '  ####################      ',
   ],
@@ -225,11 +282,23 @@ export const CORDWAIN_ROOT = makeMap({
 
 export const CORDWAIN_CROWN = makeMap({
   id: 'cordwain_crown',
+  floor: '=',
   name: 'Cordwain — Crown',
   subtitle: 'direct light, and everything the wind does to you for it',
   spawn: { x: 15, y: 11 },
+  ambient: 'field',
+  motes: 'ash',
+  moteRate: 0.3,
+  // Crown is the only place the Ember reaches directly. Hot, bare, exposed.
+  grade: { bloom: 0.85, vignette: 0.7, grain: 0.045, warmth: 0.8 },
   fill: ' ',
   markers: {
+    'a': { kind: 'prop', prop: 'crate', solid: true },
+    'b': { kind: 'prop', prop: 'barrel', solid: true },
+    'c': { kind: 'prop', prop: 'sack', solid: true },
+    'd': { kind: 'prop', prop: 'planter', solid: true },
+    'e': { kind: 'prop', prop: 'rail', solid: true },
+    'f': { kind: 'prop', prop: 'post', solid: true },
     '1': { kind: 'exit', to: 'cordwain_mid', label: 'down to Mid', under: '=', spawn: { x: 22, y: 11, facing: 'left' } },
     '2': {
       kind: 'npc', name: 'Verity', color: '#e8622c', under: '=',
@@ -264,16 +333,17 @@ export const CORDWAIN_CROWN = makeMap({
     '     ##============##       ',
     '    ##====####=======##      ',
     '   ##=====#TT#=====3==#      ',
-    '   #======#TT#========#      ',
+    '   #======#TT#=====f==#      ',
     '   #===2==####========#      ',
-    '   #==================#      ',
-    '   ##===============###      ',
+    '   #=d================#      ',
+    '   ##=e=============###      ',
     '    ##=============##        ',
     '     ##===========##         ',
     '      ###=======1###         ',
     '        #########            ',
   ],
-  legend: { '?': { solid: false, color: '#5a4a33', speck: P.sunwood } },
+  // Gaps in the Crown canopy where the Ember comes straight through.
+  legend: { '?': { solid: false, color: '#5c4526', shade: '#6a4f2b', speck: RAMP.amber[4], lamp: false } },
 });
 
 export const MAPS = {

@@ -1,22 +1,32 @@
 import { Scene } from '../../engine/scene.js';
-import { P, GRAIN_COLOR } from '../../engine/palette.js';
+import { P, RAMP, GRAIN_COLOR, alpha, mix } from '../../engine/palette.js';
 import { Battle } from './battle.js';
 import { getAction } from './actions.js';
 import { isAlive, grainLocked } from './combatant.js';
 import { GRAIN_NAMES, relation, RELATION, acrossFrom } from './grain.js';
+import {
+  makeView, updateView, drawGrafts, drawPopups, pushPopup, setGrain,
+} from './cross-section.js';
+import { drawCreature, drawPartyFigure } from './creatures.js';
 
 const REL_LABEL = {
-  [RELATION.ACROSS]: 'ACROSS — splits the fibre  x1.75',
-  [RELATION.OBLIQUE]: 'oblique  x1.0',
-  [RELATION.ALONG]: 'ALONG — absorbed as growth  x0.25',
+  [RELATION.ACROSS]: 'ACROSS — splits the fibre   ×1.75',
+  [RELATION.OBLIQUE]: 'oblique   ×1.0',
+  [RELATION.ALONG]: 'ALONG — absorbed as growth   ×0.25',
 };
 const REL_COLOR = {
-  [RELATION.ACROSS]: P.sunwood,
-  [RELATION.OBLIQUE]: P.paleDim,
-  [RELATION.ALONG]: P.scar,
+  [RELATION.ACROSS]: RAMP.amber[4],
+  [RELATION.OBLIQUE]: RAMP.pale[1],
+  [RELATION.ALONG]: RAMP.scar[3],
 };
 
+const STAGE_Y = 172;
+const PARTY_Y = 288;
+const PANEL_Y = 374;
+
 export class BattleScene extends Scene {
+  grade = { bloom: 0.6, vignette: 0.95, grain: 0.05, warmth: 0.42 };
+
   constructor({ party, foes, title = 'Encounter', seed = 7, onEnd = null }) {
     super();
     this.battle = new Battle({ party, foes, seed });
@@ -30,45 +40,70 @@ export class BattleScene extends Scene {
     this.grainChoice = 0;
     this.graftIndex = 0;
     this.pendingAction = null;
-    this.shake = 0;
     this.t = 0;
+    this.hitstop = 0;
+    this.shake = 0;
+    this.shakeDir = { x: 1, y: 0 };
+    this.flash = 0;
+    this.flashColor = P.pale;
+    this.views = new Map();
+    for (const c of this.battle.all) this.views.set(c.uid, makeView(c));
   }
 
   enter() {
-    this.#say(this.title, P.sunwood);
-    this.#say('Read before you strike. Force along the fibre feeds it.', P.paleDim);
+    this.game.audio.setAmbient('battle');
+    this.#say(this.title, RAMP.amber[3]);
+    this.#say('Read before you strike. Force along the fibre feeds it.', RAMP.pale[1]);
     this.#syncTurn();
   }
+
+  exit() { this.game.particles.clear(); }
 
   get actor() { return this.battle.current; }
   get actionIds() { return this.actor?.actions ?? []; }
   get currentActionId() { return this.actionIds[this.menu]; }
+  view(c) { return this.views.get(c.uid); }
+  get audio() { return this.game.audio; }
 
   #say(text, color = P.pale) {
-    this.log.push({ text, color });
+    this.log.push({ text, color, age: 0 });
     if (this.log.length > 7) this.log.shift();
   }
 
   #syncTurn() {
-    if (this.battle.over) {
-      this.state = 'over';
-      return;
-    }
+    if (this.battle.over) { this.state = 'over'; return; }
     this.menu = 0;
     this.targetIndex = 0;
     this.state = this.actor.side === 'party' ? 'input' : 'foeturn';
-    if (this.state === 'foeturn') this.wait = 0.55;
+    if (this.state === 'foeturn') this.wait = 0.5;
+  }
+
+  // --- layout ---------------------------------------------------------------
+
+  /** Where a combatant is drawn. Shared by rendering and by VFX spawn points. */
+  slot(c) {
+    const foes = this.battle.foes;
+    const i = foes.indexOf(c);
+    if (i >= 0) {
+      const step = 600 / (foes.length + 1);
+      const stagger = foes.length > 1 ? (i % 2 ? 16 : -10) : 0;
+      return { x: step * (i + 1) + 8, y: STAGE_Y + stagger, radius: foes.length > 2 ? 44 : 52 };
+    }
+    const p = this.battle.party.indexOf(c);
+    return { x: 44 + p * 176, y: PARTY_Y + 40, radius: 22 };
   }
 
   // --- update ---------------------------------------------------------------
 
   update(dt) {
     this.t += dt;
-    this.shake = Math.max(0, this.shake - dt * 4);
-    if (this.wait > 0) {
-      this.wait -= dt;
-      return;
-    }
+    for (const c of this.battle.all) updateView(this.view(c), c, dt);
+    for (const line of this.log) line.age += dt;
+    this.shake = Math.max(0, this.shake - dt * 3.6);
+    this.flash = Math.max(0, this.flash - dt * 4.2);
+
+    if (this.hitstop > 0) { this.hitstop -= dt; return; }
+    if (this.wait > 0) { this.wait -= dt; return; }
 
     switch (this.state) {
       case 'input': this.#updateInput(); break;
@@ -81,90 +116,101 @@ export class BattleScene extends Scene {
     }
   }
 
+  #move(delta, length) {
+    this.audio.play('cursor');
+    return (delta + length) % length;
+  }
+
   #updateInput() {
     const dir = this.input.dir();
-    if (dir === 'up') this.menu = (this.menu - 1 + this.actionIds.length) % this.actionIds.length;
-    if (dir === 'down') this.menu = (this.menu + 1) % this.actionIds.length;
+    if (dir === 'up') this.menu = this.#move(this.menu - 1, this.actionIds.length);
+    if (dir === 'down') this.menu = this.#move(this.menu + 1, this.actionIds.length);
     if (!this.input.pressed('confirm')) return;
 
     const actionId = this.currentActionId;
     const reason = this.battle.blockedReason(this.actor, actionId);
     if (reason) {
-      this.#say(`Cannot: ${reason}.`, P.scar);
+      this.audio.play('denied');
+      this.#say(`Cannot: ${reason}.`, RAMP.scar[3]);
       return;
     }
+    this.audio.play('confirm');
     this.pendingAction = actionId;
     const action = getAction(actionId);
-
-    if (action.effect?.harvest) {
-      this.graftIndex = 0;
-      this.state = 'graft';
-    } else if (action.grain === 'choose') {
-      this.grainChoice = 0;
-      this.state = 'grain';
-    } else {
-      this.#toTargeting();
-    }
+    if (action.effect?.harvest) { this.graftIndex = 0; this.state = 'graft'; }
+    else if (action.grain === 'choose') { this.grainChoice = 0; this.state = 'grain'; }
+    else this.#toTargeting();
   }
 
   #toTargeting() {
     this.targets = this.battle.targetsFor(this.actor, this.pendingAction);
-    if (this.targets.length <= 1) {
-      this.#commit(this.targets[0] ?? this.actor);
-      return;
-    }
+    if (this.targets.length <= 1) { this.#commit(this.targets[0] ?? this.actor); return; }
     this.targetIndex = 0;
     this.state = 'target';
   }
 
   #updateGrain() {
     const dir = this.input.dir();
-    if (dir === 'left' || dir === 'up') this.grainChoice = (this.grainChoice + 3) % 4;
-    if (dir === 'right' || dir === 'down') this.grainChoice = (this.grainChoice + 1) % 4;
-    if (this.input.pressed('cancel')) { this.state = 'input'; return; }
-    if (this.input.pressed('confirm')) this.#toTargeting();
+    if (dir === 'left' || dir === 'up') this.grainChoice = this.#move(this.grainChoice - 1, 4);
+    if (dir === 'right' || dir === 'down') this.grainChoice = this.#move(this.grainChoice + 1, 4);
+    if (this.input.pressed('cancel')) { this.audio.play('cancel'); this.state = 'input'; return; }
+    if (this.input.pressed('confirm')) { this.audio.play('confirm'); this.#toTargeting(); }
   }
 
   #updateGraft() {
     const refs = this.#myGrafts();
     const dir = this.input.dir();
-    if (dir === 'up') this.graftIndex = (this.graftIndex - 1 + refs.length) % refs.length;
-    if (dir === 'down') this.graftIndex = (this.graftIndex + 1) % refs.length;
-    if (this.input.pressed('cancel')) { this.state = 'input'; return; }
+    if (dir === 'up') this.graftIndex = this.#move(this.graftIndex - 1, refs.length);
+    if (dir === 'down') this.graftIndex = this.#move(this.graftIndex + 1, refs.length);
+    if (this.input.pressed('cancel')) { this.audio.play('cancel'); this.state = 'input'; return; }
     if (this.input.pressed('confirm')) this.#commit(null, refs[this.graftIndex]);
   }
 
   #myGrafts() {
     return this.battle.all.flatMap((host) => host.grafts
-      .filter((g) => g.byUid === this.actor.uid)
-      .map((graft) => ({ graft, host })));
+      .filter((g) => g.byUid === this.actor.uid).map((graft) => ({ graft, host })));
   }
 
   #updateTarget() {
     const dir = this.input.dir();
-    if (dir === 'up' || dir === 'left') {
-      this.targetIndex = (this.targetIndex - 1 + this.targets.length) % this.targets.length;
-    }
-    if (dir === 'down' || dir === 'right') {
-      this.targetIndex = (this.targetIndex + 1) % this.targets.length;
-    }
-    if (this.input.pressed('cancel')) { this.state = 'input'; return; }
+    if (dir === 'up' || dir === 'left') this.targetIndex = this.#move(this.targetIndex - 1, this.targets.length);
+    if (dir === 'down' || dir === 'right') this.targetIndex = this.#move(this.targetIndex + 1, this.targets.length);
+    if (this.input.pressed('cancel')) { this.audio.play('cancel'); this.state = 'input'; return; }
     if (this.input.pressed('confirm')) this.#commit(this.targets[this.targetIndex]);
   }
 
   #commit(target, graftRef = null) {
-    const events = this.battle.perform(this.actor, this.pendingAction, {
+    this.audio.play('confirm');
+    const actor = this.actor;
+    const events = this.battle.perform(actor, this.pendingAction, {
       target, grain: this.grainChoice, graftRef,
     });
+    this.#lunge(actor, target);
     this.#drain(events);
     this.state = 'resolve';
-    this.wait = 0.55;
+    this.wait = 0.6;
   }
 
   #foeTurn() {
-    this.#drain(this.battle.takeFoeTurn());
+    const actor = this.actor;
+    const events = this.battle.takeFoeTurn();
+    const hit = events.find((e) => e.type === 'damage' || e.type === 'graft');
+    this.#lunge(actor, hit?.who ?? hit?.host ?? null);
+    this.#drain(events);
     this.state = 'resolve';
-    this.wait = 0.6;
+    this.wait = 0.65;
+  }
+
+  /** A short shove toward the target: reads as intent without an animation rig. */
+  #lunge(actor, target) {
+    if (!actor || !target || actor === target) return;
+    const a = this.slot(actor);
+    const b = this.slot(target);
+    const d = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const view = this.view(actor);
+    view.offsetX = ((b.x - a.x) / d) * 18;
+    view.offsetY = ((b.y - a.y) / d) * 18;
+    view.scale = 1.08;
   }
 
   #advance() {
@@ -179,59 +225,266 @@ export class BattleScene extends Scene {
     this.onEnd?.(outcome);
   }
 
+  // --- events to spectacle --------------------------------------------------
+
   #drain(events) {
     for (const e of events) {
       const line = describe(e);
       if (line) this.#say(line.text, line.color);
-      if (e.type === 'damage') this.shake = 1;
+      this.#vfx(e);
     }
+  }
+
+  #vfx(e) {
+    const fx = this.game.particles;
+    const who = e.who ?? e.host;
+    const at = who ? this.slot(who) : null;
+    const view = who ? this.view(who) : null;
+
+    switch (e.type) {
+      case 'act':
+        if (e.action.effect?.reveal) this.audio.play('read');
+        break;
+
+      case 'damage': {
+        const rel = e.relation ?? RELATION.OBLIQUE;
+        const dir = Math.random() * Math.PI * 2;
+        this.audio.play('strike', { relation: rel, power: rel === RELATION.ACROSS ? 1.1 : 0.9 });
+        if (rel === RELATION.ACROSS) {
+          fx.burst('spark', at.x, at.y, { angle: dir, spread: 1.5, speedScale: 1.2 });
+          fx.burst('splinter', at.x, at.y, { angle: dir, spread: 2.2 });
+          fx.ring(at.x, at.y, { radius: at.radius * 2.1, color: RAMP.amber[4], life: 0.42, width: 4 });
+          this.hitstop = 0.085;
+          this.#shake(0.95, dir);
+          this.flash = 0.35;
+          this.flashColor = RAMP.amber[3];
+        } else if (rel === RELATION.ALONG) {
+          fx.burst('glance', at.x, at.y, { angle: dir, spread: 1.1 });
+          this.#shake(0.25, dir);
+        } else {
+          fx.burst('splinter', at.x, at.y, { angle: dir, spread: 2.4, count: 9 });
+          this.hitstop = 0.04;
+          this.#shake(0.5, dir);
+        }
+        view.flash = 1;
+        view.shake = 1;
+        view.scale = 0.9;
+        pushPopup(view, `-${e.amount}`, {
+          color: REL_COLOR[rel] ?? P.pale,
+          size: rel === RELATION.ACROSS ? 26 : 19,
+        });
+        break;
+      }
+
+      case 'feed':
+        this.audio.play('absorb');
+        fx.burst('sap', at.x, at.y, { count: 10, speedScale: 0.7 });
+        fx.ring(at.x, at.y, { radius: at.radius * 1.6, color: RAMP.sap[4], life: 0.5, width: 2 });
+        pushPopup(view, e.sap ? `+${e.sap} sap` : `+${e.heal}`, { color: RAMP.sap[4], size: 15 });
+        break;
+
+      case 'heal':
+        if (e.amount <= 0) break;
+        this.audio.play('heal');
+        fx.burst('sap', at.x, at.y - at.radius * 0.4, { count: 12, angle: -Math.PI / 2, spread: 1.6 });
+        pushPopup(view, `+${e.amount}`, { color: RAMP.sap[4] });
+        break;
+
+      case 'scar':
+        this.audio.play('scar');
+        fx.burst('rip', at.x, at.y, { speedScale: 1.1 });
+        fx.ring(at.x, at.y, { radius: at.radius * 1.8, color: RAMP.scar[3], life: 0.5, width: 3 });
+        pushPopup(view, 'SCAR', { color: RAMP.scar[4], size: 15 });
+        this.#shake(0.7, Math.random() * Math.PI * 2);
+        break;
+
+      case 'rotate':
+        setGrain(view, e.grain);
+        this.audio.play('rotate');
+        break;
+
+      case 'grainLocked':
+        pushPopup(view, 'locked', { color: RAMP.scar[3], size: 13 });
+        break;
+
+      case 'graft':
+        this.audio.play('graft');
+        fx.burst('sap', at.x, at.y, { count: 9, speedScale: 0.6 });
+        break;
+
+      case 'mature':
+        this.audio.play('mature');
+        fx.ring(at.x, at.y, { radius: at.radius * 2.6, color: RAMP.amber[4], life: 0.7, width: 3 });
+        fx.burst('sunwood', at.x, at.y, { count: 16 });
+        this.flash = 0.22;
+        this.flashColor = RAMP.amber[4];
+        break;
+
+      case 'harvest':
+        this.audio.play('harvest');
+        fx.burst('sap', at.x, at.y, { count: 6, speedScale: 0.5 });
+        break;
+
+      case 'excise':
+        this.audio.play('excise');
+        fx.burst('spark', at.x, at.y, { count: 10, color: RAMP.ember[4] });
+        break;
+
+      case 'burn':
+        this.audio.play('burn');
+        fx.burst('sunwood', at.x, at.y, { count: 14, color: RAMP.ember[4] });
+        pushPopup(view, `burn ${e.amount}`, { color: RAMP.ember[4], size: 14 });
+        break;
+
+      case 'guard':
+        fx.ring(at.x, at.y, { radius: at.radius * 2, color: RAMP.amber[3], life: 0.6, width: 2 });
+        break;
+
+      case 'down':
+        this.audio.play('down');
+        fx.burst('splinter', at.x, at.y, { count: 26, speedScale: 1.3 });
+        fx.burst('rip', at.x, at.y, { count: 16 });
+        this.#shake(1.1, Math.random() * Math.PI * 2);
+        this.hitstop = 0.12;
+        break;
+
+      case 'revive':
+        this.audio.play('mature');
+        fx.ring(at.x, at.y, { radius: at.radius * 2.2, color: RAMP.sap[4], life: 0.6, width: 3 });
+        break;
+
+      case 'sap':
+        if (e.amount < 0) this.game.particles.burst('sunwood', 806, PARTY_Y + 26, { count: 5, speedScale: 0.6 });
+        break;
+
+      case 'outcome':
+        this.audio.play(e.outcome === 'victory' ? 'victory' : 'defeat');
+        this.audio.setAmbient(null);
+        break;
+
+      default: break;
+    }
+  }
+
+  #shake(amount, angle) {
+    this.shake = Math.max(this.shake, amount);
+    this.shakeDir = { x: Math.cos(angle), y: Math.sin(angle) };
   }
 
   // --- draw -----------------------------------------------------------------
 
   draw(r) {
     const b = this.battle;
-    r.clear(P.deep);
+    r.begin(RAMP.bark[0]);
+    this.#drawStage(r);
+
     r.save();
     if (this.shake > 0) {
-      r.translate(Math.sin(this.t * 60) * this.shake * 3, Math.cos(this.t * 71) * this.shake * 2);
+      const s = this.shake ** 2 * 13;
+      r.translate(this.shakeDir.x * Math.sin(this.t * 74) * s, this.shakeDir.y * Math.cos(this.t * 61) * s);
     }
-
-    // header
-    r.rect(0, 0, r.W, 34, P.bark);
-    r.grainFill(0, 0, r.W, 34, P.barkLit, { spacing: 11, alpha: 0.4 });
-    r.line(0, 34, r.W, 34, P.wood, 2);
-    r.text(`ROUND ${b.round}`, 16, 22, { size: 14, color: P.sunwood, weight: 700 });
-    r.text(this.title, r.W / 2, 22, { size: 14, color: P.paleDim, align: 'center' });
-    r.text(b.over ? b.outcome.toUpperCase() : `${this.actor.name}'s turn`,
-      r.W - 16, 22, { size: 13, color: P.pale, align: 'right' });
-
     this.#drawFoes(r);
+    this.game.particles.draw(r);
+    r.restore();
+
+    this.#drawHeader(r, b);
     this.#drawInspector(r);
     this.#drawParty(r);
     this.#drawMenu(r);
     this.#drawLog(r);
-    r.restore();
 
+    if (this.flash > 0) {
+      r.save();
+      r.blend('lighter', () => r.rect(0, 0, r.W, r.H, alpha(this.flashColor, this.flash * 0.3)));
+      r.restore();
+    }
     if (this.state === 'over') this.#drawOutcome(r);
   }
 
-  #drawFoes(r) {
-    const foes = this.battle.foes;
-    const zoneW = 596;
-    const step = zoneW / (foes.length + 1);
-    foes.forEach((foe, i) => {
-      const x = step * (i + 1);
-      const y = 150;
-      const selected = this.state === 'target' && this.targets?.[this.targetIndex] === foe;
-      drawCrossSection(r, foe, x, y, 58, {
-        selected, active: foe === this.actor, t: this.t,
-        previewGrain: this.#previewGrain(foe),
-      });
-    });
+  /** The stage: a lit ground plane under a dark canopy. Sells depth for free. */
+  #drawStage(r) {
+    const horizon = 108;
+    r.vgrad(0, 0, r.W, horizon, RAMP.bark[0], mix(RAMP.shade[1], RAMP.bark[1], 0.5));
+    r.vgrad(0, horizon, r.W, PARTY_Y - horizon, mix(RAMP.shade[1], RAMP.bark[2], 0.6), RAMP.bark[1]);
+
+    // Key light falling from above-left, the way the low Ember would.
+    r.light(300, 40, 460, RAMP.amber[2], 0.2);
+    r.light(660, 90, 380, RAMP.amber[1], 0.14);
+
+    // Ground plane with a drifting grain, so the floor reads as a Trace.
+    r.save();
+    r.clipRect(0, horizon, r.W, PARTY_Y - horizon);
+    r.grainFill(-60, horizon, r.W + 120, PARTY_Y - horizon, RAMP.wood[1],
+      { spacing: 22, alpha: 0.22, angle: -0.06, lw: 1.4, jitter: 3 });
+    r.restore();
+    r.line(0, horizon, r.W, horizon, alpha(RAMP.bark[0], 0.7), 2);
   }
 
-  /** The grain of the action the player is currently pointing at this target. */
+  #drawHeader(r, b) {
+    r.save();
+    r.vgrad(0, 0, r.W, 38, alpha(RAMP.bark[0], 0.94), alpha(RAMP.bark[0], 0.6));
+    r.line(0, 38, r.W, 38, alpha(RAMP.wood[1], 0.7), 1.5);
+    r.text(`ROUND ${b.round}`, 18, 25, { size: 12, color: RAMP.amber[3], weight: 700, tracking: 2 });
+    r.text(this.title, r.W / 2, 25, {
+      size: 15, color: RAMP.pale[4], align: 'center', font: 'display', tracking: 1,
+    });
+    r.text(b.over ? b.outcome.toUpperCase() : `${this.actor.name.toUpperCase()}`,
+      r.W - 18, 25, { size: 12, color: RAMP.pale[2], align: 'right', tracking: 2 });
+    r.restore();
+  }
+
+  #drawFoes(r) {
+    for (const foe of this.battle.foes) {
+      const at = this.slot(foe);
+      const view = this.view(foe);
+      const selected = this.state === 'target' && this.targets?.[this.targetIndex] === foe;
+      r.light(at.x, at.y + at.radius * 0.7, at.radius * 2.6, RAMP.amber[1], 0.16);
+      const drawn = drawCreature(r, foe, view, at.x, at.y, at.radius, {
+        selected, t: this.t,
+      });
+      this.#drawAimGuide(r, foe, drawn);
+      drawGrafts(r, foe, view, drawn.x, drawn.y, drawn.radius, this.t);
+
+      const nameY = at.y + at.radius + 26;
+      r.text(foe.name, at.x, nameY, {
+        size: 13, color: isAlive(foe) ? RAMP.pale[4] : RAMP.scar[3],
+        align: 'center', weight: 700, shadow: alpha(RAMP.bark[0], 0.9),
+      });
+      r.bar(at.x - at.radius, nameY + 8, at.radius * 2, 7,
+        view.hpShown / foe.maxHp, isAlive(foe) ? RAMP.ember[3] : RAMP.scar[2], { glow: true });
+      if (foe.intentVisible && foe.intent) {
+        r.text(`intends ${getAction(foe.intent).name}`, at.x, nameY + 28,
+          { size: 10, color: RAMP.shade[5], align: 'center' });
+      }
+      drawPopups(r, view, at.x, at.y - at.radius * 0.5);
+    }
+  }
+
+  /** Where the pending force will come from, drawn onto the target it will hit. */
+  #drawAimGuide(r, foe, drawn) {
+    const g = this.#previewGrain(foe);
+    if (g == null) return;
+    const pa = g * (Math.PI / 4) + Math.PI / 2;
+    const pulse = 0.5 + 0.5 * Math.sin(this.t * 7);
+    r.save();
+    r.blend('lighter', () => {
+      for (const s of [-1, 1]) {
+        const ox = Math.cos(pa) * s;
+        const oy = Math.sin(pa) * s;
+        const R = drawn.radius;
+        r.line(drawn.x + ox * (R + 12 + pulse * 6), drawn.y + oy * (R + 12 + pulse * 6),
+          drawn.x + ox * (R + 34 + pulse * 9), drawn.y + oy * (R + 34 + pulse * 9),
+          RAMP.amber[4], 3, 'round');
+        r.poly([
+          [drawn.x + ox * (R + 6), drawn.y + oy * (R + 6)],
+          [drawn.x + ox * (R + 18) - oy * 6, drawn.y + oy * (R + 18) + ox * 6],
+          [drawn.x + ox * (R + 18) + oy * 6, drawn.y + oy * (R + 18) - ox * 6],
+        ], alpha(RAMP.amber[5], 0.6 + pulse * 0.4));
+      }
+    });
+    r.restore();
+  }
+
   #previewGrain(target) {
     if (this.state !== 'target' || this.targets?.[this.targetIndex] !== target) return null;
     const action = getAction(this.pendingAction);
@@ -240,114 +493,138 @@ export class BattleScene extends Scene {
   }
 
   #drawInspector(r) {
-    const x = 612;
-    const y = 44;
+    const x = 628;
+    const y = 46;
     const w = r.W - x - 16;
-    const h = 228;
-    r.panel(x, y, w, h);
+    const h = 226;
+    r.panel(x, y, w, h, { accent: RAMP.wood[2] });
 
     const focus = this.state === 'target' ? this.targets?.[this.targetIndex]
       : this.state === 'graft' ? this.#myGrafts()[this.graftIndex]?.host
       : this.actor;
     if (!focus) return;
+    const view = this.view(focus);
 
-    r.text(focus.name.toUpperCase(), x + 14, y + 26, { size: 15, color: P.pale, weight: 700 });
-    r.text(focus.role, x + 14, y + 44, { size: 11, color: P.paleDim });
+    r.text(focus.name.toUpperCase(), x + 16, y + 28, {
+      size: 16, color: RAMP.pale[5], weight: 700, font: 'display', tracking: 1.5,
+    });
+    r.text(focus.role, x + 16, y + 46, { size: 10, color: RAMP.pale[1], tracking: 0.5 });
+    r.line(x + 16, y + 56, x + w - 16, y + 56, alpha(RAMP.wood[1], 0.6), 1);
 
     const known = focus.revealed;
-    r.text('GRAIN', x + 14, y + 74, { size: 11, color: P.paleDim });
+    r.text('GRAIN', x + 16, y + 78, { size: 9, color: RAMP.pale[0], tracking: 2 });
     if (known) {
-      drawDial(r, x + 96, y + 108, 34, focus.grain, grainLocked(focus));
-      r.text(GRAIN_NAMES[focus.grain], x + 140, y + 104,
-        { size: 14, color: GRAIN_COLOR[focus.grain], weight: 700 });
-      r.text(grainLocked(focus) ? 'locked by scar — cannot turn' : 'turns +1 on any hit',
-        x + 140, y + 122, { size: 10, color: grainLocked(focus) ? P.scar : P.paleDim });
+      drawDial(r, x + 60, y + 110, 30, focus.grain, grainLocked(focus), view.grainAngle);
+      r.text(GRAIN_NAMES[focus.grain], x + 106, y + 106, {
+        size: 15, color: GRAIN_COLOR[focus.grain], weight: 700, font: 'display',
+      });
+      r.text(grainLocked(focus) ? 'scarred — cannot turn' : 'turns +1 on any hit',
+        x + 106, y + 124, { size: 10, color: grainLocked(focus) ? RAMP.scar[3] : RAMP.pale[1] });
     } else {
-      r.text('unread — Read to expose', x + 60, y + 104, { size: 12, color: P.shadeLit });
-      r.text('striking blind risks feeding it', x + 60, y + 122, { size: 10, color: P.paleDim });
+      drawDial(r, x + 60, y + 110, 30, -1, false, view.grainAngle);
+      r.text('unread', x + 106, y + 106, { size: 14, color: RAMP.shade[5], font: 'display' });
+      r.text('striking blind may feed it', x + 106, y + 124, { size: 10, color: RAMP.pale[0] });
     }
 
     let ly = y + 158;
-    r.text('GRAFTS', x + 14, ly, { size: 11, color: P.paleDim });
-    ly += 18;
+    r.text('GRAFTS', x + 16, ly, { size: 9, color: RAMP.pale[0], tracking: 2 });
+    ly += 17;
     if (!focus.grafts.length) {
-      r.text('none', x + 24, ly, { size: 12, color: P.wood });
+      r.text('none', x + 26, ly, { size: 11, color: RAMP.wood[1] });
     } else {
-      for (const g of focus.grafts) {
+      for (const g of focus.grafts.slice(0, 3)) {
         const mine = g.bySide === 'party';
-        const label = known ? `${g.name}  matures in ${g.maturity}` : `${g.name}  ?`;
-        r.text(`${mine ? '+' : '-'} ${label}`, x + 24, ly,
-          { size: 12, color: mine ? P.sap : P.ember });
-        ly += 17;
+        r.circle(x + 22, ly - 4, 3.5, mine ? RAMP.sap[4] : RAMP.ember[4]);
+        r.text(known ? `${g.name} — ${g.maturity}` : `${g.name} — ?`, x + 32, ly,
+          { size: 11, color: mine ? RAMP.sap[4] : RAMP.ember[4] });
+        ly += 16;
       }
     }
     if (focus.scars > 0) {
-      r.text(`SCARS  ${'/'.repeat(focus.scars)}  max HP ${focus.maxHp}`,
-        x + 14, y + h - 16, { size: 11, color: P.scar });
+      r.text(`SCARS ${'▰'.repeat(focus.scars)}   max ${focus.maxHp}`,
+        x + 16, y + h - 14, { size: 10, color: RAMP.scar[3], tracking: 1 });
     }
   }
 
   #drawParty(r) {
-    const y = 282;
-    r.line(0, y - 4, r.W, y - 4, P.bark, 2);
+    const y = PARTY_Y;
     this.battle.party.forEach((c, i) => {
-      const x = 16 + i * 176;
+      const x = 14 + i * 176;
+      const w = 168;
       const active = c === this.actor;
       const targeted = this.state === 'target' && this.targets?.[this.targetIndex] === c;
-      const w = 168;
-      r.panel(x, y, w, 84, {
-        fill: active ? P.barkLit : P.bark,
-        border: targeted ? P.sunwood : active ? P.woodLit : P.wood,
+      const view = this.view(c);
+      r.panel(x, y, w, 78, {
+        fill: active ? mix(RAMP.bark[3], RAMP.amber[0], 0.25) : null,
+        border: targeted ? RAMP.amber[4] : active ? RAMP.wood[3] : RAMP.wood[1],
+        accent: targeted ? RAMP.amber[4] : null,
       });
-      drawCrossSection(r, c, x + 30, y + 42, 20, { compact: true, t: this.t });
+      if (active) r.light(x + w / 2, y + 39, 120, RAMP.amber[3], 0.16);
+
+      const at = this.slot(c);
+      drawPartyFigure(r, c, view, at.x, at.y + 24, { active, t: this.t });
       r.text(c.name, x + 60, y + 24, {
-        size: 14, color: isAlive(c) ? P.pale : P.scar, weight: 700,
+        size: 14, color: isAlive(c) ? RAMP.pale[5] : RAMP.scar[3], weight: 700, font: 'display',
       });
-      r.text(c.role, x + 60, y + 38, { size: 9, color: P.paleDim });
-      drawBar(r, x + 60, y + 48, 94, 8, c.hp / c.maxHp, isAlive(c) ? P.sap : P.scar);
-      r.text(`${c.hp}/${c.maxHp}`, x + 60, y + 70, { size: 10, color: P.paleDim });
-      if (c.guarding) r.text('BEARING', x + 118, y + 70, { size: 9, color: P.sunwood });
-      if (c.scars) r.text('/'.repeat(c.scars), x + 152 - c.scars * 5, y + 24, { size: 11, color: P.scar });
+      r.text(c.role, x + 60, y + 38, { size: 8.5, color: RAMP.pale[1], tracking: 0.4 });
+      r.bar(x + 60, y + 46, 94, 7, view.hpShown / c.maxHp, isAlive(c) ? RAMP.sap[3] : RAMP.scar[2]);
+      r.text(`${c.hp}/${c.maxHp}`, x + 60, y + 66, { size: 9.5, color: RAMP.pale[1] });
+      if (c.guarding) r.text('BEARING', x + 114, y + 66, { size: 8.5, color: RAMP.amber[4] });
+      if (c.scars) r.text('▰'.repeat(c.scars), x + w - 12, y + 24,
+        { size: 9, color: RAMP.scar[3], align: 'right' });
+      drawPopups(r, view, at.x, at.y - 24);
     });
 
-    // shared sap pool
-    const sx = 740;
-    r.text('SAP', sx, y + 24, { size: 12, color: P.paleDim });
+    // Shared Sap: sunwood crystals, lit when charged.
+    const sx = 730;
+    r.text('SAP', sx, y + 22, { size: 9, color: RAMP.pale[0], tracking: 2 });
     for (let i = 0; i < this.battle.maxSap; i++) {
+      const cx = sx + 32 + (i % 6) * 19;
+      const cy = y + 18 + Math.floor(i / 6) * 19;
       const filled = i < this.battle.sap;
-      r.circle(sx + 34 + (i % 6) * 18, y + 20 + Math.floor(i / 6) * 18, 6,
-        filled ? P.sunwood : P.wood, { stroke: !filled, lw: 1.5 });
+      if (filled) r.light(cx, cy, 15, RAMP.amber[4], 0.5);
+      r.poly([[cx, cy - 6], [cx + 5, cy], [cx, cy + 6], [cx - 5, cy]],
+        filled ? RAMP.amber[4] : RAMP.bark[3]);
+      r.poly([[cx, cy - 6], [cx + 5, cy], [cx, cy + 6], [cx - 5, cy]],
+        filled ? RAMP.amber[5] : RAMP.wood[0], { stroke: true, lw: 1 });
     }
-    r.text(`${this.battle.sap}/${this.battle.maxSap}  shared`, sx, y + 70,
-      { size: 10, color: P.paleDim });
+    r.text(`${this.battle.sap}/${this.battle.maxSap} shared`, sx, y + 66,
+      { size: 9.5, color: RAMP.pale[1] });
   }
 
   #drawMenu(r) {
-    const x = 16;
-    const y = 372;
-    const w = 420;
-    r.panel(x, y, w, 156);
+    const x = 14;
+    const y = PANEL_Y;
+    const w = 424;
+    r.panel(x, y, w, 152, { accent: RAMP.wood[2] });
 
     if (this.state === 'grain') {
-      r.text('SING ALONG WHICH FIBRE?', x + 14, y + 24, { size: 12, color: P.sunwood });
+      r.text('SING ALONG WHICH FIBRE?', x + 16, y + 26,
+        { size: 11, color: RAMP.amber[3], tracking: 1.5 });
       GRAIN_NAMES.forEach((name, i) => {
         const sel = i === this.grainChoice;
-        const gx = x + 22 + i * 100;
-        drawDial(r, gx + 26, y + 74, 20, i, false);
-        r.text(name, gx + 26, y + 112, {
-          size: 11, color: sel ? P.pale : P.paleDim, align: 'center', weight: sel ? 700 : 400,
+        const gx = x + 26 + i * 100;
+        if (sel) {
+          r.light(gx + 26, y + 76, 60, GRAIN_COLOR[i], 0.4);
+          r.roundRect(gx - 8, y + 44, 70, 82, 4, alpha(RAMP.amber[4], 0.12));
+          r.roundRect(gx - 8, y + 44, 70, 82, 4, RAMP.amber[4], { stroke: true, lw: 2 });
+        }
+        drawDial(r, gx + 26, y + 78, 22, i, false, i * (Math.PI / 4));
+        r.text(name, gx + 26, y + 118, {
+          size: 10, color: sel ? RAMP.pale[5] : RAMP.pale[1], align: 'center', weight: sel ? 700 : 400,
         });
-        if (sel) r.strokeRect(gx - 8, y + 46, 68, 78, P.sunwood, 2);
       });
       return;
     }
 
     if (this.state === 'graft') {
-      r.text('HARVEST WHICH GRAFT?', x + 14, y + 24, { size: 12, color: P.sunwood });
+      r.text('HARVEST WHICH GRAFT?', x + 16, y + 26,
+        { size: 11, color: RAMP.amber[3], tracking: 1.5 });
       this.#myGrafts().forEach((ref, i) => {
         const sel = i === this.graftIndex;
-        r.text(`${sel ? '>' : ' '} ${ref.graft.name} on ${ref.host.name} — ${ref.graft.maturity} to go`,
-          x + 18, y + 54 + i * 22, { size: 12, color: sel ? P.pale : P.paleDim });
+        if (sel) r.roundRect(x + 10, y + 40 + i * 22, w - 20, 21, 3, alpha(RAMP.amber[4], 0.13));
+        r.text(`${ref.graft.name} on ${ref.host.name} — ${ref.graft.maturity} to go`,
+          x + 22, y + 55 + i * 22, { size: 12, color: sel ? RAMP.pale[5] : RAMP.pale[1] });
       });
       return;
     }
@@ -359,224 +636,159 @@ export class BattleScene extends Scene {
       const action = getAction(id);
       const sel = i === this.menu && this.state !== 'foeturn';
       const blocked = this.battle.blockedReason(actor, id);
-      const color = blocked ? P.wood : sel ? P.pale : P.paleDim;
-      const ly = y + 26 + i * 20;
-      if (sel) r.rect(x + 8, ly - 13, w - 16, 19, P.barkLit);
-      r.text(`${sel ? '>' : ' '} ${action.name}`, x + 14, ly, { size: 13, color, weight: sel ? 700 : 400 });
+      const color = blocked ? RAMP.wood[0] : sel ? RAMP.pale[5] : RAMP.pale[2];
+      const ly = y + 28 + i * 21;
+      if (sel) {
+        r.roundRect(x + 9, ly - 15, w - 18, 20, 3, alpha(RAMP.amber[4], 0.14));
+        r.line(x + 9, ly - 15, x + 9, ly + 5, RAMP.amber[4], 2);
+      }
+      r.text(action.name, x + 22, ly, { size: 13, color, weight: sel ? 700 : 400 });
+      if (action.grain != null && action.grain !== 'choose') {
+        r.circle(x + w - 74, ly - 4, 3.5, GRAIN_COLOR[action.grain]);
+      }
       if (action.sap > 0) {
         const short = action.sap > this.battle.sap;
-        r.text(short ? `${action.sap} sap — burn` : `${action.sap} sap`, x + w - 20, ly,
-          { size: 11, color: short ? P.ember : P.sunwood, align: 'right' });
+        r.text(short ? `${action.sap} burn` : `${action.sap} sap`, x + w - 22, ly,
+          { size: 10.5, color: short ? RAMP.ember[3] : RAMP.amber[3], align: 'right' });
       }
     });
 
     const hint = getAction(this.currentActionId ?? 'strike');
-    const lines = r.wrap(hint.desc, w - 28, 11);
-    lines.slice(0, 2).forEach((line, i) => {
-      r.text(line, x + 14, y + 130 + i * 15, { size: 11, color: P.shadeLit });
+    r.line(x + 16, y + 122, x + w - 16, y + 122, alpha(RAMP.wood[1], 0.5), 1);
+    r.wrap(hint.desc, w - 34, 10.5).slice(0, 2).forEach((line, i) => {
+      r.text(line, x + 17, y + 136 + i * 13, { size: 10.5, color: RAMP.shade[5] });
     });
   }
 
   #drawLog(r) {
-    const x = 448;
-    const y = 372;
+    const x = 450;
+    const y = PANEL_Y;
     const w = r.W - x - 16;
-    r.panel(x, y, w, 156, { grain: false });
+    r.panel(x, y, w, 152, { grain: false, accent: RAMP.wood[2] });
 
-    // Targeting preview: the one place the game teaches Grain.
     if (this.state === 'target') {
       const target = this.targets[this.targetIndex];
       const g = this.#previewGrain(target);
-      r.text(`TARGET  ${target.name}`, x + 14, y + 24, { size: 12, color: P.sunwood, weight: 700 });
+      r.text(`TARGET   ${target.name.toUpperCase()}`, x + 16, y + 28, {
+        size: 12, color: RAMP.amber[3], weight: 700, tracking: 1.5,
+      });
       if (g == null) {
-        r.text('no force applied', x + 14, y + 46, { size: 11, color: P.paleDim });
+        r.text('no force applied', x + 16, y + 54, { size: 11, color: RAMP.pale[1] });
       } else if (!target.revealed) {
-        r.text('grain unread — outcome unknown', x + 14, y + 46, { size: 12, color: P.shadeLit });
-        r.text('Read first, or accept the risk.', x + 14, y + 64, { size: 11, color: P.paleDim });
+        r.text('grain unread — outcome unknown', x + 16, y + 54, { size: 12, color: RAMP.shade[5] });
+        r.text('Read first, or accept the risk.', x + 16, y + 74, { size: 10.5, color: RAMP.pale[1] });
       } else {
         const rel = relation(g, target.grain);
-        r.text(REL_LABEL[rel], x + 14, y + 46, { size: 12, color: REL_COLOR[rel], weight: 700 });
+        r.text(REL_LABEL[rel], x + 16, y + 56, {
+          size: 12.5, color: REL_COLOR[rel], weight: 700, font: 'display',
+        });
         r.text(`this hit turns its fibre to ${GRAIN_NAMES[(target.grain + 1) % 4]}`,
-          x + 14, y + 66, { size: 10, color: P.paleDim });
+          x + 16, y + 80, { size: 10, color: RAMP.pale[1] });
         r.text(`across would be ${GRAIN_NAMES[acrossFrom(target.grain)]}`,
-          x + 14, y + 82, { size: 10, color: P.wood });
+          x + 16, y + 97, { size: 10, color: RAMP.wood[2] });
       }
-      r.text('arrows: switch target    enter: commit    x: back',
-        x + 14, y + 140, { size: 10, color: P.wood });
+      r.text('arrows switch · enter commit · x back', x + 16, y + 138,
+        { size: 9.5, color: RAMP.wood[1] });
       return;
     }
 
     this.log.slice(-6).forEach((entry, i) => {
-      r.text(entry.text, x + 14, y + 26 + i * 19, { size: 11, color: entry.color });
+      r.save();
+      r.alpha(Math.min(1, 0.45 + i * 0.11));
+      r.text(entry.text, x + 16, y + 28 + i * 19, { size: 11, color: entry.color });
+      r.restore();
     });
   }
 
   #drawOutcome(r) {
-    r.save();
-    r.alpha(0.82);
-    r.rect(0, 0, r.W, r.H, P.void);
-    r.restore();
     const victory = this.battle.outcome === 'victory';
-    r.text(victory ? 'NO LONGER STRUCTURALLY VIABLE' : 'THE CIRCUIT IS DOWN',
-      r.W / 2, r.H / 2 - 14, {
-        size: 22, color: victory ? P.sunwood : P.scar, align: 'center', weight: 700,
-      });
-    r.text(victory
-      ? 'You did not kill it. You rendered it unable to continue — the same judgement\nyou would apply to a sick Strider.'
-      : 'Pell will get everyone upright. It will cost the circuit a week it does not have.',
-      r.W / 2, r.H / 2 + 20, { size: 12, color: P.paleDim, align: 'center' });
-    r.text('enter — continue', r.W / 2, r.H / 2 + 74, { size: 12, color: P.pale, align: 'center' });
-  }
-}
-
-// --- shared drawing helpers -------------------------------------------------
-
-/** Every combatant is a cross-section of wood: rings, a fibre direction, and scars.
- *  Grain position maps to 45 degrees of rotation, so "across the grain" is drawn
- *  exactly perpendicular to the fibre. The mechanic is legible without a tooltip. */
-export function drawCrossSection(r, c, x, y, radius, {
-  selected = false, active = false, compact = false, t = 0, previewGrain = null,
-} = {}) {
-  const alive = isAlive(c);
-  const known = c.revealed;
-  const rings = compact ? 4 : 7;
-
-  r.save();
-  if (!alive) r.alpha(0.35);
-
-  r.circle(x, y, radius, P.bark);
-  for (let i = rings; i > 0; i--) {
-    const rad = radius * (i / rings);
-    r.circle(x, y, rad, i % 2 ? P.barkLit : P.wood, { stroke: true, lw: 1.2 });
-  }
-
-  // fibre
-  const angle = (known ? c.grain : 0) * (Math.PI / 4);
-  const gc = known ? GRAIN_COLOR[c.grain] : P.shade;
-  r.save();
-  r.ctx.beginPath();
-  r.ctx.arc(x, y, radius - 1, 0, Math.PI * 2);
-  r.ctx.clip();
-  for (let o = -radius; o <= radius; o += compact ? 7 : 9) {
-    const dx = Math.cos(angle) * radius;
-    const dy = Math.sin(angle) * radius;
-    const nx = -Math.sin(angle) * o;
-    const ny = Math.cos(angle) * o;
-    r.line(x + nx - dx, y + ny - dy, x + nx + dx, y + ny + dy, gc, known ? 1.6 : 1);
-  }
-  r.restore();
-
-  // preview: the direction force is about to come from
-  if (previewGrain != null) {
-    const pa = previewGrain * (Math.PI / 4) + Math.PI / 2;
-    const pulse = 0.55 + 0.45 * Math.sin(t * 6);
     r.save();
-    r.alpha(pulse);
-    for (const s of [-1, 1]) {
-      r.line(
-        x + Math.cos(pa) * (radius + 6) * s, y + Math.sin(pa) * (radius + 6) * s,
-        x + Math.cos(pa) * (radius + 20) * s, y + Math.sin(pa) * (radius + 20) * s,
-        P.sunwood, 2.5,
-      );
-    }
+    r.alpha(0.86);
+    r.rect(0, 0, r.W, r.H, RAMP.bark[0]);
+    r.restore();
+    r.light(r.W / 2, r.H / 2 - 20, 420, victory ? RAMP.amber[3] : RAMP.scar[2], 0.28);
+
+    r.text(victory ? 'NO LONGER STRUCTURALLY VIABLE' : 'THE CIRCUIT IS DOWN', r.W / 2, r.H / 2 - 24, {
+      size: 27, color: victory ? RAMP.amber[4] : RAMP.scar[4],
+      align: 'center', weight: 700, font: 'display', tracking: 2,
+    });
+    r.line(r.W / 2 - 220, r.H / 2 - 6, r.W / 2 + 220, r.H / 2 - 6, alpha(RAMP.wood[2], 0.7), 1);
+    const body = victory
+      ? 'You did not kill it. You rendered it unable to continue — the same judgement\nyou would apply to a sick Strider.'
+      : 'Pell will get everyone upright. It will cost the circuit a week it does not have.';
+    r.wrap(body, 640, 12).forEach((line, i) => {
+      r.text(line, r.W / 2, r.H / 2 + 22 + i * 19, { size: 12, color: RAMP.pale[1], align: 'center' });
+    });
+    r.save();
+    r.alpha(0.5 + 0.5 * Math.sin(this.t * 3));
+    r.text('ENTER', r.W / 2, r.H / 2 + 94,
+      { size: 13, color: RAMP.pale[4], align: 'center', tracking: 3, weight: 700 });
     r.restore();
   }
-
-  // scars: wedges cut out of the rings
-  for (let i = 0; i < c.scars; i++) {
-    const a = -0.6 + i * 0.9;
-    r.poly([
-      [x, y],
-      [x + Math.cos(a) * radius, y + Math.sin(a) * radius],
-      [x + Math.cos(a + 0.22) * radius, y + Math.sin(a + 0.22) * radius],
-    ], P.scar);
-  }
-
-  r.circle(x, y, radius, selected ? P.sunwood : active ? P.woodLit : P.wood,
-    { stroke: true, lw: selected ? 3 : 2 });
-  r.restore();
-
-  if (compact) return;
-
-  // grafts orbit the rim, numbered by rounds remaining
-  c.grafts.forEach((g, i) => {
-    const a = -Math.PI / 2 + i * 0.7;
-    const gx = x + Math.cos(a) * (radius + 16);
-    const gy = y + Math.sin(a) * (radius + 16);
-    const mine = g.bySide === 'party';
-    r.circle(gx, gy, 9, mine ? P.sap : P.ember);
-    r.text(known ? String(g.maturity) : '?', gx, gy + 4,
-      { size: 11, color: P.deep, align: 'center', weight: 700 });
-  });
-
-  r.text(c.name, x, y + radius + 30, {
-    size: 13, color: alive ? P.pale : P.scar, align: 'center', weight: 700,
-  });
-  drawBar(r, x - radius, y + radius + 38, radius * 2, 7, c.hp / c.maxHp, alive ? P.ember : P.scar);
-  r.text(`${c.hp}/${c.maxHp}`, x, y + radius + 60, { size: 10, color: P.paleDim, align: 'center' });
-  if (c.intentVisible && c.intent) {
-    r.text(`intends: ${getAction(c.intent).name}`, x, y + radius + 76,
-      { size: 10, color: P.shadeLit, align: 'center' });
-  }
 }
 
-export function drawDial(r, x, y, radius, grain, locked) {
-  r.circle(x, y, radius, P.deep);
-  r.circle(x, y, radius, locked ? P.scar : P.wood, { stroke: true, lw: 2 });
+/** The Grain dial. `angle` lets it tween with the section it describes. */
+export function drawDial(r, x, y, radius, grain, locked, angle = null) {
+  r.circle(x, y, radius, alpha(RAMP.bark[0], 0.85));
+  r.circle(x, y, radius, locked ? RAMP.scar[2] : RAMP.wood[1], { stroke: true, lw: 2 });
   for (let i = 0; i < 4; i++) {
     const a = i * (Math.PI / 4);
     const on = i === grain;
-    r.line(
-      x - Math.cos(a) * radius * 0.85, y - Math.sin(a) * radius * 0.85,
-      x + Math.cos(a) * radius * 0.85, y + Math.sin(a) * radius * 0.85,
-      on ? GRAIN_COLOR[i] : P.bark, on ? 3 : 1,
-    );
+    if (on) continue;
+    r.line(x - Math.cos(a) * radius * 0.8, y - Math.sin(a) * radius * 0.8,
+      x + Math.cos(a) * radius * 0.8, y + Math.sin(a) * radius * 0.8,
+      alpha(RAMP.bark[4], 0.8), 1);
   }
-}
-
-export function drawBar(r, x, y, w, h, ratio, color) {
-  r.rect(x, y, w, h, P.void);
-  r.rect(x, y, Math.max(0, Math.min(1, ratio)) * w, h, color);
-  r.strokeRect(x, y, w, h, P.wood, 1);
+  if (grain >= 0) {
+    const a = angle ?? grain * (Math.PI / 4);
+    r.save();
+    r.blend('lighter', () => {
+      r.line(x - Math.cos(a) * radius * 0.86, y - Math.sin(a) * radius * 0.86,
+        x + Math.cos(a) * radius * 0.86, y + Math.sin(a) * radius * 0.86,
+        GRAIN_COLOR[grain], 3.5, 'round');
+    });
+    r.restore();
+  } else {
+    r.text('?', x, y + 5, { size: 15, color: RAMP.shade[4], align: 'center', weight: 700 });
+  }
+  if (locked) {
+    r.circle(x, y, radius * 0.35, RAMP.scar[3], { stroke: true, lw: 2 });
+  }
 }
 
 function describe(e) {
   switch (e.type) {
-    case 'act': return { text: `${e.who.name}: ${e.action.name}`, color: P.pale };
+    case 'act': return { text: `${e.who.name}: ${e.action.name}`, color: RAMP.pale[4] };
     case 'damage': {
-      const tag = e.relation === RELATION.ACROSS ? '  ACROSS'
-        : e.relation === RELATION.ALONG ? '  along — absorbed' : '';
+      const tag = e.relation === RELATION.ACROSS ? '   ACROSS'
+        : e.relation === RELATION.ALONG ? '   along — absorbed' : '';
       return { text: `  ${e.who.name} takes ${e.amount}${tag}`, color: REL_COLOR[e.relation] ?? P.pale };
     }
-    case 'heal': return e.amount > 0
-      ? { text: `  ${e.who.name} knits ${e.amount}`, color: P.sap } : null;
+    case 'heal': return e.amount > 0 ? { text: `  ${e.who.name} knits ${e.amount}`, color: RAMP.sap[4] } : null;
     case 'feed': return {
-      text: e.sap ? `  force absorbed — party gains ${e.sap} Sap`
-                  : `  ${e.who.name} absorbs the force and grows ${e.heal}`,
-      color: e.sap ? P.sunwood : P.scar,
+      text: e.sap ? `  absorbed — party gains ${e.sap} Sap` : `  ${e.who.name} absorbs it and grows ${e.heal}`,
+      color: e.sap ? RAMP.amber[3] : RAMP.scar[3],
     };
-    case 'scar': return { text: `  ${e.who.name} scars — fibre locked`, color: P.scar };
-    case 'grainLocked': return { text: `  ${e.who.name}'s grain will not turn`, color: P.scar };
-    case 'graft': return { text: `  ${e.graft.name} placed on ${e.host.name} (${e.graft.maturity})`, color: P.sap };
-    case 'overgraft': return { text: `  ${e.host.name} is over-grafted — the stack slows`, color: P.ember };
-    case 'mature': return { text: `${e.graft.name} matures on ${e.host.name}`, color: P.sunwood };
-    case 'harvest': return { text: `  ${e.graft.name} harvested early`, color: P.paleDim };
-    case 'excise': return { text: `  ${e.graft.name} excised from ${e.host.name}`, color: P.ember };
-    case 'retime': return {
-      text: `  ${e.graft.name} rewritten — ${e.dir < 0 ? 'sooner' : 'later'}`, color: P.shadeLit,
-    };
-    case 'reveal': return { text: `  ${e.who.name} read — grain exposed`, color: P.shadeLit };
+    case 'scar': return { text: `  ${e.who.name} scars — fibre locked`, color: RAMP.scar[3] };
+    case 'grainLocked': return { text: `  ${e.who.name}'s grain will not turn`, color: RAMP.scar[3] };
+    case 'graft': return { text: `  ${e.graft.name} placed on ${e.host.name} (${e.graft.maturity})`, color: RAMP.sap[4] };
+    case 'overgraft': return { text: `  ${e.host.name} is over-grafted — the stack slows`, color: RAMP.ember[3] };
+    case 'mature': return { text: `${e.graft.name} matures on ${e.host.name}`, color: RAMP.amber[4] };
+    case 'harvest': return { text: `  ${e.graft.name} harvested early`, color: RAMP.pale[1] };
+    case 'excise': return { text: `  ${e.graft.name} excised from ${e.host.name}`, color: RAMP.ember[3] };
+    case 'retime': return { text: `  ${e.graft.name} rewritten — ${e.dir < 0 ? 'sooner' : 'later'}`, color: RAMP.shade[5] };
+    case 'reveal': return { text: `  ${e.who.name} read — grain exposed`, color: RAMP.shade[5] };
     case 'forecast': return {
       text: `  forecast: ${e.who.name} intends ${e.action ? getAction(e.action).name : 'nothing'}`,
-      color: P.shadeLit,
+      color: RAMP.shade[5],
     };
-    case 'guard': return { text: `  ${e.who.name} bears the round`, color: P.sunwood };
-    case 'redirect': return { text: `  ${e.to.name} takes it instead of ${e.from.name}`, color: P.sunwood };
-    case 'burn': return { text: `  heartwood burned — ${e.amount} HP for Sap`, color: P.scar };
-    case 'down': return { text: `${e.who.name} is no longer viable`, color: P.scar };
-    case 'revive': return { text: `${e.who.name} is back up`, color: P.sap };
-    case 'round': return { text: `— round ${e.round} —`, color: P.wood };
-    case 'message': return { text: `  ${e.text}`, color: P.paleDim };
+    case 'guard': return { text: `  ${e.who.name} bears the round`, color: RAMP.amber[3] };
+    case 'redirect': return { text: `  ${e.to.name} takes it instead of ${e.from.name}`, color: RAMP.amber[3] };
+    case 'burn': return { text: `  heartwood burned — ${e.amount} HP for Sap`, color: RAMP.scar[3] };
+    case 'down': return { text: `${e.who.name} is no longer viable`, color: RAMP.scar[3] };
+    case 'revive': return { text: `${e.who.name} is back up`, color: RAMP.sap[4] };
+    case 'round': return { text: `— round ${e.round} —`, color: RAMP.wood[1] };
+    case 'message': return { text: `  ${e.text}`, color: RAMP.pale[1] };
     default: return null;
   }
 }

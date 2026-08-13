@@ -19,6 +19,7 @@ someone edited it.
 | [`05-map.md`](05-map.md) | Traces, the seven regions, traversal, the Act III transformation. |
 | [`06-cast.md`](06-cast.md) | The circuit, and Verity Anneal-of-the-Ninth. |
 | [`07-battle-system.md`](07-battle-system.md) | Grain, Grafts, Sap, Scars — combat as the same verb as investigation. |
+| [`08-art-direction.md`](08-art-direction.md) | "Lantern-lit woodcut": the palette, the light rule, motion, and sound. |
 
 ## The premise in one paragraph
 
