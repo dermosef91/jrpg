@@ -3,27 +3,39 @@ import assert from 'node:assert/strict';
 import { buildMap, MAP_IDS, NPC_LINES } from '../src/game/explore/maps.js';
 import { OPENING, BEATS, BEATS_AGAIN, DESCEND_AGAIN } from '../src/game/story/prologue.js';
 import { ENCOUNTERS } from '../src/game/data/foes.js';
-import { toScreen, toGrid, TW, TH } from '../src/game/explore/iso.js';
+import { toScreen, toGrid, TS, buildWalls } from '../src/game/explore/grid.js';
 import { effectiveStats, EQUIPMENT, SLOTS } from '../src/game/data/equipment.js';
 import { makeParty, DEFAULT_FORMATION } from '../src/game/data/party.js';
 import { ROUTE_NODES, ROUTE_EDGES } from '../src/game/data/route.js';
 import { SHARDS, STARTING_SHARDS } from '../src/game/data/shards.js';
 import { planLayout } from '../src/engine/touch.js';
 
-test('isometric projection round-trips', () => {
+test('the grid projection round-trips through screen space', () => {
   for (const [x, y] of [[0, 0], [3, 7], [12, 4], [19, 15]]) {
-    const s = toScreen(x, y, 0);
+    const s = toScreen(x, y);
     const g = toGrid(s.x, s.y);
-    assert.ok(Math.abs(g.x - x) < 1e-6, `x drifted: ${g.x} vs ${x}`);
-    assert.ok(Math.abs(g.y - y) < 1e-6, `y drifted: ${g.y} vs ${y}`);
+    assert.equal(g.x, x, `x drifted: ${g.x} vs ${x}`);
+    assert.equal(g.y, y, `y drifted: ${g.y} vs ${y}`);
   }
 });
 
-test('elevation lifts a tile straight up the screen', () => {
-  const flat = toScreen(4, 4, 0);
-  const high = toScreen(4, 4, 2);
-  assert.equal(flat.x, high.x);
-  assert.ok(high.y < flat.y);
+test('screen axes and grid axes agree, which is the point of top-down', () => {
+  const origin = toScreen(4, 4);
+  assert.equal(toScreen(5, 4).y, origin.y, 'walking east moved the party vertically');
+  assert.equal(toScreen(4, 5).x, origin.x, 'walking south moved the party horizontally');
+  assert.equal(toScreen(5, 4).x - origin.x, TS, 'one square east is not one tile wide');
+  assert.equal(toScreen(4, 5).y - origin.y, TS, 'one square south is not one tile tall');
+});
+
+test('every corner of a tile maps back to that tile', () => {
+  for (const [x, y] of [[0, 0], [6, 2], [11, 9]]) {
+    const s = toScreen(x, y);
+    for (const [ox, oy] of [[-TS / 2, -TS / 2], [TS / 2 - 1, -TS / 2],
+      [-TS / 2, TS / 2 - 1], [TS / 2 - 1, TS / 2 - 1]]) {
+      const g = toGrid(s.x + ox, s.y + oy);
+      assert.deepEqual(g, { x, y }, `corner ${ox},${oy} of ${x},${y} fell into ${g.x},${g.y}`);
+    }
+  }
 });
 
 test('every walkable tile is reachable on foot from the spawn', () => {
@@ -239,5 +251,72 @@ test('the scripted opening never leaves the player without a fade back in', () =
       if (step.fade === 'in') dark = false;
     }
     assert.equal(dark, false, `${name} ends with the screen still black`);
+  }
+});
+
+test('the rock a gallery was cut out of surrounds every walkable square', () => {
+  // Top down, a void square beside the floor is drawn as a block of rock. Miss
+  // one and the floor has a hole straight through to the black, which reads as
+  // a rendering fault rather than as a cliff.
+  for (const id of MAP_IDS) {
+    const map = buildMap(id);
+    const rock = new Set(buildWalls(map).map((w) => `${w.x},${w.y}`));
+    for (let y = 0; y < map.h; y++) {
+      for (let x = 0; x < map.w; x++) {
+        if (!map.walkable(x, y)) continue;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (map.walkable(nx, ny)) continue;
+          if (nx < 0 || ny < 0 || nx >= map.w || ny >= map.h) continue;
+          assert.ok(rock.has(`${nx},${ny}`),
+            `${id}: gap beside ${x},${y} -- ${nx},${ny} is neither floor nor rock`);
+        }
+      }
+    }
+  }
+});
+
+test('rock only wears a face where there is floor for it to stand on', () => {
+  for (const id of MAP_IDS) {
+    const map = buildMap(id);
+    for (const w of buildWalls(map)) {
+      const front = map.at(w.x, w.y + 1);
+      assert.equal(w.face > 0, !!front?.walk,
+        `${id}: rock at ${w.x},${w.y} has the wrong face for what is in front of it`);
+      const above = map.at(w.x, w.y - 1);
+      assert.equal(w.cap, !above || !!above.walk,
+        `${id}: rock at ${w.x},${w.y} is lit on a top edge buried in more rock`);
+    }
+  }
+});
+
+test('a map is small enough that walking it does not need a scrolling epic', () => {
+  // 24px squares against a 480x270 frame: 20 across and 11 down are on screen at
+  // once. A map far bigger than that stops being a place and becomes a corridor.
+  for (const id of MAP_IDS) {
+    const map = buildMap(id);
+    assert.ok(map.w * TS <= 480 * 3, `${id} is ${map.w} squares wide`);
+    assert.ok(map.h * TS <= 270 * 6, `${id} is ${map.h} squares tall`);
+  }
+});
+
+test('elevation only ever changes by one storey between neighbours', () => {
+  // The climb rule allows one storey. A two-storey jump between adjacent walkable
+  // squares would be a step the party can see and cannot take.
+  for (const id of MAP_IDS) {
+    const map = buildMap(id);
+    for (let y = 0; y < map.h; y++) {
+      for (let x = 0; x < map.w; x++) {
+        const cell = map.at(x, y);
+        if (!cell.walk) continue;
+        for (const [dx, dy] of [[1, 0], [0, 1]]) {
+          const n = map.at(x + dx, y + dy);
+          if (!n?.walk) continue;
+          assert.ok(Math.abs(n.z - cell.z) <= 1,
+            `${id}: ${x},${y} at z${cell.z} abuts ${x + dx},${y + dy} at z${n.z}`);
+        }
+      }
+    }
   }
 });

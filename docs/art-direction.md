@@ -46,8 +46,9 @@ actually prints.
   inlaid into the gallery floor, with a sun-mandala burning on the back wall
   behind a bone monolith. Bodies are lit a step or two above the wall tone so
   they never read as floating masks.
-- **Exploration** is isometric — 24×12 diamonds, one storey of elevation at 10px
-  — stone platforms with ember inlay, hung in blackness among colossal roots.
+- **Exploration** is top-down on 24px squares, camera centred on the party —
+  stone decks with ember inlay, cut out of black rock among colossal roots.
+  Height is read from the lip between squares, not from a projection.
 - **Menus** are ember rules and bone plates with hard corner brackets and a root
   ornament in each corner. Nothing is rounded and nothing is soft.
 
@@ -89,3 +90,28 @@ the full height with the sockets where its shards used to sit, roots through
 the joints, and a flagged landing whose joints splay toward the camera. Which
 one is drawn comes off the encounter, falling back to wherever the party is
 standing when the fight starts.
+
+## Why top-down, and what it costs
+
+Isometric bought elevation for free: a storey was ten pixels up the screen and a
+staircase drew itself. It charged for that everywhere else. Diagonal screen axes
+meant no arrow key walked along an axis the player could see; props, walls and
+figures all had to sort into one painter's order; and every piece of set
+dressing had to be authored on a skewed plane.
+
+Top-down gives all of that back. North is up, the sort is just "further down the
+screen draws later", and a prop is drawn the way it looks. What it takes away is
+height, so height is paid for explicitly:
+
+- **The lip.** Where a square abuts a higher one, the low square draws a face on
+  that edge with a bone-lit top. A flight of stairs is a stack of lips.
+- **The rock.** Void beside floor is drawn as a dark mass with a face hanging
+  into the square in front of it, and a contact shadow where the face lands. The
+  shadow is what actually sells the mass as standing on the ground rather than
+  being a hole cut in it.
+- **Value separation.** Floor is bone-pale, rock is near-black. They never share
+  a value range. A player should never have to work out what is walkable.
+
+Figures gained a `facing`, which isometric never needed because there was no
+"toward the camera": a character walking north now shows the back of their head,
+and 'right' is the mirror of 'left' rather than a second set of art.

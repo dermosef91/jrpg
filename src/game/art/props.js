@@ -1,9 +1,8 @@
 import { P, mix, alpha } from '../../engine/palette.js';
-import { TW, TH } from '../explore/iso.js';
 
 // Set dressing for the galleries: carved stone furniture with ember inlay, lit
 // by its own light. Everything is drawn anchored to the centre-bottom of its
-// tile so it sits correctly in the isometric stack.
+// tile, so a prop stands up out of the square it occupies.
 
 export function drawProp(r, kind, sx, sy, { t = 0, open = false } = {}) {
   (PROPS[kind] ?? PROPS.rail)(r, sx, sy, t, open);
@@ -122,22 +121,30 @@ const PROPS = {
 };
 
 /** The great mosaic set into the plaza floor: a tree of ember lines. */
+/** The great inlay cut into the floor of the plaza. Seen from directly above it
+ *  is a circle, and the tree cut into it is a tree seen from above: a ring of
+ *  boughs radiating out of one trunk. */
 export function drawPlazaMosaic(r, sx, sy, t) {
   const pulse = 0.7 + 0.3 * Math.sin(t * 0.7);
-  r.wash(sx, sy, 62, 32, P.emberDeep, 0.34 * pulse);
+  r.wash(sx, sy, 74, 74, P.emberDeep, 0.30 * pulse);
   for (let i = 0; i < 3; i++) {
-    ellipseRing(r, sx, sy, 40 - i * 12, 20 - i * 6, i === 0 ? P.ember : P.emberDeep);
+    ellipseRing(r, sx, sy, 56 - i * 16, 56 - i * 16, i === 0 ? P.ember : P.emberDeep);
   }
-  // trunk and branches, drawn in the flattened iso plane
-  r.line(sx, sy + 12, sx, sy - 6, P.emberLit);
-  for (const [dx, dy] of [[-14, -2], [14, -2], [-9, -8], [9, -8], [0, -12]]) {
-    r.line(sx, sy - 2, sx + dx, sy + dy, P.ember);
-    r.px(sx + dx, sy + dy, P.emberBright);
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    const inner = i % 3 === 0 ? 8 : 24;
+    const outer = i % 3 === 0 ? 54 : 40;
+    r.line(sx + Math.cos(a) * inner, sy + Math.sin(a) * inner,
+      sx + Math.cos(a) * outer, sy + Math.sin(a) * outer,
+      i % 3 === 0 ? P.ember : P.emberDeep);
+    if (i % 3 === 0) {
+      r.px(Math.round(sx + Math.cos(a) * outer), Math.round(sy + Math.sin(a) * outer),
+        P.emberBright);
+    }
   }
-  for (const [dx, dy] of [[-7, 8], [7, 8], [0, 13]]) {
-    r.line(sx, sy + 6, sx + dx, sy + dy, P.emberDeep);
-  }
-  r.px(sx, sy - 2, P.emberWhite);
+  r.circle(sx, sy, 6, P.emberDeep);
+  r.circle(sx, sy, 3, P.emberHot);
+  r.px(sx, sy, P.emberWhite);
 }
 
 function ellipseRing(r, cx, cy, rx, ry, color) {

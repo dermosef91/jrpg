@@ -13,7 +13,7 @@ pixel is drawn and every sound is synthesised at play time.
 
 ```sh
 npm start        # http://localhost:8080
-npm test         # 44 tests, no dependencies
+npm test         # 49 tests, no dependencies
 npm run build    # assemble the deployable site into _site/
 npm run smoke    # drive every scene in a real browser (needs Playwright, see below)
 ```
@@ -60,10 +60,20 @@ script ever ends with the screen still faded to black.
 
 ## The game
 
-**Exploration** is isometric. Rootplaza is a network of stone decks hung over a
-drop, joined by stairs and a rope bridge, lit by shard-lamps. Walk into a lamp to
-rest, a chest to loot it, an NPC to hear what has gone wrong at the Quiet Stair.
-Out on the open decks something eventually finds you.
+**Exploration** is top-down on a square grid — 24px tiles, the camera centred on
+the party, screen axes and grid axes the same so a press of "up" walks north and
+nothing else. Rootplaza is a network of stone decks cut out of the rock, joined
+by stairs and a rope bridge, lit by shard-lamps. Walk into a lamp to rest, a
+chest to loot it, an NPC to hear what has gone wrong at the Quiet Stair. Out on
+the open decks something eventually finds you.
+
+Elevation survives from above as the climb rule (one storey at a time, or any
+step where one side is a stair) and as a drawn lip between neighbouring squares
+of different height, which is enough to read a flight of stairs looking straight
+down at it. Everything that is not floor is the rock the gallery was cut out of:
+a dark mass with a face hanging into the square in front of it, painted in a
+value range the bone-pale floor never enters, so what is walkable is never a
+question the player has to stop and answer.
 
 **Battle** is turn-based, four commands — ATTACK, RITE, ITEM, GUARD — with turn
 order by AGI shown as a live queue. HP and **EP**: rites borrow ember, and the
@@ -106,7 +116,7 @@ Full detail in [`docs/art-direction.md`](docs/art-direction.md). The setting is 
 src/engine/           renderer, bitmap font, input, scene stack, audio, touch, rng
 src/game/art/         arena backdrop, party figures, foes, props, portraits
 src/game/battle/      battle engine and its scene
-src/game/explore/     isometric projection, map, exploration scene
+src/game/explore/     top-down grid projection, maps, exploration scene
 src/game/menu/        the party menu
 src/game/story/       the cutscene director and the prologue script
 src/game/data/        party, rites, foes, equipment, items, shards, world route

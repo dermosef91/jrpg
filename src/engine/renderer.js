@@ -1,6 +1,8 @@
 import { P, alpha, mix } from './palette.js';
 import { drawText, textWidth, wrapText, FONT_H, GLYPH_ADVANCE } from './font.js';
 
+const CACHE_MAX = 512;
+
 export const VW = 480;
 export const VH = 270;
 
@@ -109,13 +111,31 @@ export class Renderer {
       this.ctx = sctx;
       draw(this);
       this.ctx = real;
-      if (this.cache.size > 64) this.cache.clear();
+      // Evict the oldest entry rather than emptying the whole cache. Four
+      // facings of every figure blow past a small cap easily, and a full clear
+      // means repainting every sprite on the next frame, every frame.
+      if (this.cache.size >= CACHE_MAX) {
+        this.cache.delete(this.cache.keys().next().value);
+      }
       this.cache.set(key, sprite);
     }
     return sprite;
   }
 
   blit(sprite, x, y) { this.ctx.drawImage(sprite, Math.round(x), Math.round(y)); }
+
+  /** Cache the horizontal mirror of a sprite that is already cached. Cheaper
+   *  and far less error-prone than authoring every figure twice. */
+  mirrored(key, sprite) {
+    return this.cached(key, sprite.width, sprite.height, (rr) => {
+      const c = rr.ctx;
+      c.save();
+      c.translate(sprite.width, 0);
+      c.scale(-1, 1);
+      c.drawImage(sprite, 0, 0);
+      c.restore();
+    });
+  }
 
   // --- primitives ----------------------------------------------------------
 

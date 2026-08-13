@@ -2,8 +2,9 @@
 // props all stay editable by hand.
 //
 //   tiles     ' ' void   s stone   p plaza   b bridge   x stair
-//   height    0-9 storeys
-//   inlay     0 none, 1-5 the patterns in iso.js
+//   height    0-9 storeys -- top down this is the climb rule and the drawn lip
+//             between neighbouring squares, not a screen offset
+//   inlay     0 none, 1-5 the patterns in grid.js
 //   dead      '#' marks inlay that has gone out
 //   props     see PROP_KINDS
 

@@ -2,7 +2,7 @@ import { Scene } from '../../engine/scene.js';
 import { P, mix, alpha } from '../../engine/palette.js';
 import { makeRng } from '../../engine/rng.js';
 import { buildMap, NPC_LINES } from './maps.js';
-import { TW, TH, ZH, toScreen, drawTile, isoShadow } from './iso.js';
+import { TS, toScreen, drawTile, drawWall, drawStepEdge, groundShadow, buildWalls } from './grid.js';
 import { drawProp, drawPlazaMosaic, drawHangingRoots } from '../art/props.js';
 import { drawFigure } from '../art/figures.js';
 import { drawPortrait } from '../art/portrait.js';
@@ -35,11 +35,30 @@ export class ExploreScene extends Scene {
     this.opened = new Set();
     this.cam = { x: 0, y: 0 };
     this.scriptPath = null;
+    // Seeded so the rest of the line is standing behind the leader the instant a
+    // map loads, rather than popping into existence after nine steps of walking.
     this.trail = [];
+    this.#seedTrail(start);
     this.motes = Array.from({ length: 26 }, () => ({
       x: Math.random() * 480, y: Math.random() * 270,
       vy: -(2 + Math.random() * 6), vx: (Math.random() - 0.5) * 3,
     }));
+  }
+
+  /** Lay a trail behind the spawn so the rest of the line is already strung out
+   *  when a map loads, instead of standing inside the leader for nine steps. */
+  #seedTrail(start) {
+    let x = start.x;
+    let y = start.y;
+    for (let i = 0; i < 24; i++) {
+      // Back up along whichever neighbour is walkable, preferring straight back.
+      const back = [[0, -1], [-1, 0], [1, 0], [0, 1]]
+        .map(([dx, dy]) => ({ x: x + dx, y: y + dy }))
+        .find((c) => this.map.walkable(c.x, c.y)
+          && !this.trail.some((t) => t.x === c.x && t.y === c.y));
+      if (i % 2 === 0 && back) { x = back.x; y = back.y; }
+      this.trail.push({ x, y, facing: 'down' });
+    }
   }
 
   enter() {
@@ -227,28 +246,24 @@ export class ExploreScene extends Scene {
     const ease = this.moving ? 1 - this.moveT / MOVE_TIME : 1;
     const gx = this.fromX + (this.px - this.fromX) * ease;
     const gy = this.fromY + (this.py - this.fromY) * ease;
-    const cell = this.cell(this.px, this.py) ?? { z: 0 };
-    const fromCell = this.cell(this.fromX, this.fromY) ?? cell;
-    const gz = fromCell.z + (cell.z - fromCell.z) * ease;
-    return { ...toScreen(gx, gy, gz), gx, gy, gz };
+    return { ...toScreen(gx, gy), gx, gy };
   }
 
   draw(r) {
     r.begin(P.void);
     const p = this.#playerScreen();
-    const cam = { x: Math.round(p.x - r.W / 2), y: Math.round(p.y - r.H / 2 - 10) };
+    const cam = this.#camera(p, r);
     this.cam = cam;
 
-    // the black of the gallery, with a faint warm wash where the plaza burns
     r.dither(0, 0, r.W, r.H, P.black, 0.5);
     if (!this.map.dark) {
-      const plaza = toScreen(9, 11, 0);
-      r.wash(plaza.x - cam.x, plaza.y - cam.y, 150, 78, P.emberDeep, 0.30);
+      const plaza = toScreen(9, 11);
+      r.wash(plaza.x - cam.x, plaza.y - cam.y, 150, 110, P.emberDeep, 0.30);
     }
 
     r.save();
     r.translate(-cam.x, -cam.y);
-    this.#drawWorld(r, p);
+    this.#drawWorld(r, p, cam);
     r.restore();
 
     if (this.map.dark) this.#drawDarkness(r, p, cam);
@@ -258,178 +273,182 @@ export class ExploreScene extends Scene {
     this.#drawHud(r);
   }
 
-  /** The rock a cut passage was cut through. The far side rises above head
-   *  height; the near side is kept to a kerb, because a full block there would
-   *  stand between the camera and the steps the player is walking down. */
-  #walls() {
-    if (this.#wallCache) return this.#wallCache;
-    const { map } = this;
-    const out = [];
-    for (let y = 0; y < map.h; y++) {
-      for (let x = 0; x < map.w; x++) {
-        if (map.cells[y][x].walk) continue;
-        const far = [[1, 0], [0, 1], [1, 1]]
-          .map(([dx, dy]) => map.at(x + dx, y + dy))
-          .filter((n) => n?.walk);
-        const near = [[-1, 0], [0, -1], [-1, -1]]
-          .map(([dx, dy]) => map.at(x + dx, y + dy))
-          .filter((n) => n?.walk);
-        const touching = far.length ? far : near;
-        if (!touching.length) continue;
-        const floor = Math.max(...touching.map((n) => n.z));
-        out.push({
-          x, y, wall: true, tall: far.length > 0,
-          z: far.length ? floor + 2 : floor,
-          seed: (x * 7 + y * 13) % 5,
-        });
-      }
-    }
-    this.#wallCache = out;
-    return out;
+  /** Always centred on the party. Clamping to the map edge is the usual thing
+   *  to do, but these galleries are lit islands in a black gallery -- the void
+   *  past the edge is the setting, not an error -- and clamping strands the
+   *  party at the top of the frame the moment they stand on the first row. */
+  #camera(p, r) {
+    return { x: Math.round(p.x - r.W / 2), y: Math.round(p.y - r.H / 2) };
   }
 
-  #drawWorld(r, p) {
+  #walls() {
+    this.#wallCache ??= buildWalls(this.map);
+    return this.#wallCache;
+  }
+
+  /** Only the part of the map the camera can actually see. At 24px a tile the
+   *  full map is a few hundred squares and most of them are off screen. */
+  #visible(cam, r, pad = 2) {
+    return {
+      x0: Math.max(0, Math.floor(cam.x / TS) - pad),
+      x1: Math.min(this.map.w - 1, Math.floor((cam.x + r.W) / TS) + pad),
+      y0: Math.max(0, Math.floor(cam.y / TS) - pad),
+      y1: Math.min(this.map.h - 1, Math.floor((cam.y + r.H) / TS) + pad),
+    };
+  }
+
+  #drawWorld(r, p, cam) {
     const { map } = this;
-    // Ground first, painted back to front so the isometric stack resolves.
-    const order = [];
-    for (let y = 0; y < map.h; y++) {
-      for (let x = 0; x < map.w; x++) {
+    const view = this.#visible(cam, r);
+
+    // --- the floor, and the lips between tiles at different heights ---
+    for (let y = view.y0; y <= view.y1; y++) {
+      for (let x = view.x0; x <= view.x1; x++) {
         const cell = map.cells[y][x];
         if (!cell.walk) continue;
-        order.push(cell);
-      }
-    }
-    if (map.dark) order.push(...this.#walls());
-    order.sort((a, b) => (a.x + a.y) - (b.x + b.y) || a.z - b.z);
-
-    for (const cell of order) {
-      if (cell.wall) {
+        const s = toScreen(x, y);
         const dim = this.#lampDim(cell, p);
-        if (dim >= 0.98) continue;
-        const s = toScreen(cell.x, cell.y, cell.z - (cell.seed % 2) * 0.2);
-        drawTile(r, s.x, s.y, { top: cell.tall ? P.stoneDark : P.stoneShadow },
-          { drop: cell.tall ? 30 + cell.seed * 3 : 9, dim, lit: cell.tall ? 0.5 : 0.3 });
-        continue;
+        if (dim >= 1) continue;
+        drawTile(r, s.x, s.y, { top: cell.top, dead: cell.dead },
+          { inlay: cell.inlay, dim, seed: (x * 5 + y * 3) % 16 });
+        if (cell.bridge) this.#bridgePlanks(r, s.x, s.y);
+        for (const [side, dx, dy] of [['north', 0, -1], ['west', -1, 0], ['east', 1, 0]]) {
+          const n = map.at(x + dx, y + dy);
+          if (n?.walk && n.z > cell.z) drawStepEdge(r, s.x, s.y, side, n.z - cell.z, dim);
+        }
       }
-      const s = toScreen(cell.x, cell.y, cell.z);
-      const below = map.at(cell.x, cell.y + 1);
-      const drop = !below || !below.walk || below.z < cell.z
-        ? Math.max(4, (cell.z - (below?.z ?? -1)) * ZH)
-        : 0;
-      drawTile(r, s.x, s.y, { top: cell.top, dead: cell.dead },
-        { inlay: cell.inlay, drop, dim: this.#lampDim(cell, p) });
-      if (cell.bridge) this.#bridgePlanks(r, s.x, s.y);
     }
 
-    // the mosaic sits on the plaza, under everything that stands on it
     if (!map.dark) {
-      const centre = toScreen(9, 11.5, 0);
+      const centre = toScreen(9, 11);
       drawPlazaMosaic(r, centre.x, centre.y, this.t);
     }
 
-    // then everything that stands up, sorted with the party token
-    const standing = map.props
-      .filter((prop) => prop.kind !== 'trigger')
-      .map((prop) => ({ depth: prop.x + prop.y, kind: 'prop', prop }));
-    standing.push({ depth: p.gx + p.gy + 0.01, kind: 'player' });
+    // --- everything with height, painted top of the screen downward so that
+    // what is nearer the camera covers what is behind it ---
+    const standing = [];
+    for (const wall of this.#walls()) {
+      if (wall.x < view.x0 || wall.x > view.x1 || wall.y < view.y0 || wall.y > view.y1) continue;
+      standing.push({ depth: wall.y * TS, kind: 'wall', wall });
+    }
+    for (const prop of map.props) {
+      if (prop.kind === 'trigger') continue;
+      standing.push({ depth: prop.y * TS + TS / 2 + 1, kind: 'prop', prop });
+    }
+    standing.push({ depth: p.y, kind: 'player' });
 
     // The rest of the line walks a few steps back along the leader's trail.
-    const line = this.game.activeParty.slice(1);
-    line.forEach((who, i) => {
-      const at = this.trail[(i + 1) * 3];
+    // Two squares apart, not three: square tiles are twice the screen height of
+    // the old isometric ones, and at three the back of the line walks out of the
+    // lamp and looks like a party member who has gone missing.
+    this.game.activeParty.slice(1).forEach((who, i) => {
+      const at = this.trail[(i + 1) * 2];
       if (!at) return;
-      standing.push({ depth: at.x + at.y, kind: 'follower', who, at, i });
+      const s = toScreen(at.x, at.y);
+      standing.push({ depth: s.y, kind: 'follower', who, at, i });
     });
     standing.sort((a, b) => a.depth - b.depth);
 
     for (const item of standing) {
+      if (item.kind === 'wall') {
+        const s = toScreen(item.wall.x, item.wall.y);
+        drawWall(r, s.x, s.y, {
+          dim: this.#lampDim(item.wall, p), face: item.wall.face,
+          seed: item.wall.seed, cap: item.wall.cap,
+        });
+        continue;
+      }
       if (item.kind === 'player') {
-        isoShadow(r, p.x, p.y + 2, 6);
-        drawFigure(r, this.game.activeParty[0].figure, p.x, p.y + 4, {
-          pose: this.moving ? 'attack' : 'idle',
+        groundShadow(r, p.x, p.y + 5, 7);
+        drawFigure(r, this.game.activeParty[0].figure, p.x, p.y + 8, {
+          facing: this.facing,
+          pose: 'idle',
           frame: this.moving ? Math.floor(this.t * 8) % 2 : Math.floor(this.t * 1.6) % 2,
         });
         continue;
       }
       if (item.kind === 'follower') {
-        const s = toScreen(item.at.x, item.at.y, this.cell(item.at.x, item.at.y)?.z ?? 0);
-        isoShadow(r, s.x, s.y + 2, 5);
-        drawFigure(r, item.who.figure, s.x, s.y + 4, {
-          frame: this.moving ? Math.floor(this.t * 8 + item.i) % 2 : Math.floor(this.t * 1.4 + item.i) % 2,
+        const s = toScreen(item.at.x, item.at.y);
+        groundShadow(r, s.x, s.y + 5, 6);
+        drawFigure(r, item.who.figure, s.x, s.y + 8, {
+          facing: item.at.facing ?? 'down',
+          frame: this.moving ? Math.floor(this.t * 8 + item.i) % 2
+            : Math.floor(this.t * 1.4 + item.i) % 2,
         });
         continue;
       }
       const prop = item.prop;
-      const s = toScreen(prop.x, prop.y, prop.z);
+      const s = toScreen(prop.x, prop.y);
       if (prop.kind === 'npc') {
         const spec = NPC_SPRITES[`${prop.x},${prop.y}`] ?? NPC_SPRITES.default;
-        isoShadow(r, s.x, s.y + 2, 6);
-        drawFigure(r, spec, s.x, s.y + 4, { frame: Math.floor(this.t * 1.2 + prop.x) % 2 });
+        groundShadow(r, s.x, s.y + 5, 7);
+        drawFigure(r, spec, s.x, s.y + 8, {
+          facing: 'down', frame: Math.floor(this.t * 1.2 + prop.x) % 2,
+        });
       } else {
-        // The mask is the only thing on this stair worth walking toward, and
-        // it is a pale object on pale stone in the dark. Mark it.
+        // The mask is the only thing on this stair worth walking toward, and it
+        // is a pale object on pale stone in the dark. Mark it.
         if (prop.kind === 'mask' && this.game.objective === 'THE MASK') {
           const pulse = 0.5 + 0.5 * Math.sin(this.t * 2.4);
-          r.ellipse(s.x, s.y + 3, 12 + pulse * 2, 6 + pulse,
+          r.ellipse(s.x, s.y + 4, 12 + pulse * 2, 7 + pulse,
             alpha(P.emberDeep, 0.20 + pulse * 0.12));
-          r.glow(s.x, s.y - 2, 8, P.ember, 0.30 + pulse * 0.16);
+          r.glow(s.x, s.y, 8, P.ember, 0.30 + pulse * 0.16);
         }
-        drawProp(r, prop.kind, s.x, s.y + 4, {
+        drawProp(r, prop.kind, s.x, s.y + 9, {
           t: this.t, open: this.opened.has(`${prop.x},${prop.y}`),
         });
       }
     }
   }
 
-  /** How far a tile has fallen out of Zahra's lamp, 0 lit to 1 gone. Grid
-   *  distance is the right measure here: both axes project to the same screen
-   *  length, so a circle in grid space is a circle on screen. */
+  /** How far a tile has fallen out of Zahra's lamp, 0 lit to 1 gone. Measured
+   *  in grid squares, which top down are square on screen too. */
   #lampDim(cell, p) {
     if (!this.map.dark) return 0;
     const d = Math.hypot(cell.x - p.gx, cell.y - p.gy);
-    return Math.max(0, Math.min(1, (d - 1.5) / 3.6));
+    // Finishes a little inside the mask, so the stone is already black by the
+    // time the mask closes and the pool has no visible circular edge.
+    return Math.max(0, Math.min(1, (d - 1.5) / 2.5));
   }
 
   #wallCache = null;
 
   #bridgePlanks(r, sx, sy) {
-    for (let i = -1; i <= 1; i++) {
-      r.line(sx - TW / 2 + 4, sy + i * 3, sx + TW / 2 - 4, sy + i * 3, alpha(P.void, 0.4));
+    for (let i = -2; i <= 2; i++) {
+      r.hline(sx - TS / 2 + 2, Math.round(sy + i * 5), TS - 4, alpha(P.void, 0.4));
     }
   }
 
   /** On the Quiet Stair, Zahra's lamp is the only light there is. A cached
    *  radial dither is punched into a black screen and follows her. */
   #drawDarkness(r, p, cam) {
-    const W = 236;
-    const H = 156;
+    const D = 300;
     // The stone has already shaded itself out by grid distance. All this mask
     // has to do is take the props, the party line and the hanging roots with it,
     // and close the last of it to black before the frame edge does.
-    const mask = r.cached('darkmask', W, H, (rr) => {
-      const cx = W / 2;
-      const cy = H / 2;
-      for (let y = 0; y < H; y++) {
-        for (let x = 0; x < W; x++) {
-          const d = Math.hypot((x - cx) / cx, (y - cy) / cy);
-          if (d < 0.5) continue;
-          rr.dither(x, y, 1, 1, P.void, Math.min(1, (d - 0.5) / 0.34));
+    const mask = r.cached('darkmask', D, D, (rr) => {
+      const c = D / 2;
+      for (let y = 0; y < D; y++) {
+        for (let x = 0; x < D; x++) {
+          const d = Math.hypot(x - c, y - c) / c;
+          if (d < 0.44) continue;
+          rr.dither(x, y, 1, 1, P.void, Math.min(1, (d - 0.44) / 0.34));
         }
       }
     });
-    const mx = Math.round(p.x - cam.x - W / 2);
-    const my = Math.round(p.y - cam.y - H / 2 - 8);
+    const mx = Math.round(p.x - cam.x - D / 2);
+    const my = Math.round(p.y - cam.y - D / 2);
     r.blit(mask, mx, my);
     // Outside the lamp there is nothing to see, so there is nothing drawn.
     r.rect(0, 0, r.W, Math.max(0, my), P.void);
-    r.rect(0, my + H, r.W, r.H - (my + H), P.void);
-    r.rect(0, my, Math.max(0, mx), H, P.void);
-    r.rect(mx + W, my, r.W - (mx + W), H, P.void);
+    r.rect(0, my + D, r.W, r.H - (my + D), P.void);
+    r.rect(0, my, Math.max(0, mx), D, P.void);
+    r.rect(mx + D, my, r.W - (mx + D), D, P.void);
     // The flame itself. Kept small and dense: a wide, weak glow dithers down to
     // a visible lattice of single pixels, which reads as a bug and not as light.
     const flicker = 1 + Math.sin(this.t * 3.1) * 0.06 + Math.sin(this.t * 8.3) * 0.03;
-    r.glow(p.x - cam.x + 1, p.y - cam.y - 9, Math.round(11 * flicker), P.ember, 0.55);
-    r.glow(p.x - cam.x + 1, p.y - cam.y - 10, Math.round(4 * flicker), P.emberWhite, 0.9);
+    r.glow(p.x - cam.x + 1, p.y - cam.y - 4, Math.round(11 * flicker), P.ember, 0.55);
+    r.glow(p.x - cam.x + 1, p.y - cam.y - 5, Math.round(4 * flicker), P.emberWhite, 0.9);
   }
 
   #drawHud(r) {

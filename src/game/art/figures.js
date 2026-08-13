@@ -21,9 +21,16 @@ export const FIG_H = 38;
  * @property {string} weapon    'spear' | 'disc' | 'fists' | 'staff'
  */
 
-export function drawFigure(r, spec, x, y, { pose = 'idle', frame = 0, flip = false, t = 0 } = {}) {
-  const key = `fig:${spec.id}:${pose}:${frame}:${flip}`;
-  const sprite = r.cached(key, FIG_W, FIG_H, (rr) => paint(rr, spec, pose, frame, flip));
+/**
+ * `facing` is what the top-down field needs: a character walking north should
+ * show the back of their head, not their face. 'right' is the mirror of 'left'
+ * rather than a second set of art.
+ */
+export function drawFigure(r, spec, x, y, { pose = 'idle', frame = 0, facing = 'down', t = 0 } = {}) {
+  const draw = facing === 'right' ? 'left' : facing;
+  const key = `fig:${spec.id}:${pose}:${frame}:${draw}`;
+  let sprite = r.cached(key, FIG_W, FIG_H, (rr) => paint(rr, spec, pose, frame, draw));
+  if (facing === 'right') sprite = r.mirrored(`${key}:R`, sprite);
   r.blit(sprite, Math.round(x - FIG_W / 2), Math.round(y - FIG_H));
 }
 
@@ -32,7 +39,7 @@ export function figureShadow(r, x, y, width = 9) {
   r.ellipse(x, y, width, Math.max(2, width * 0.32), alpha(P.void, 0.65));
 }
 
-function paint(r, spec, pose, frame, flip) {
+function paint(r, spec, pose, frame, facing) {
   const skin = RAMP.skin[spec.skin ?? 4];
   const skinLit = RAMP.skin[Math.min(6, (spec.skin ?? 4) + 1)];
   const skinDark = RAMP.skin[Math.max(0, (spec.skin ?? 4) - 2)];
@@ -42,8 +49,13 @@ function paint(r, spec, pose, frame, flip) {
   const trim = spec.trim ?? P.bark;
   const accent = spec.accent ?? P.emberBright;
 
+  // Which way the body is turned. The authored pose looks to its own left, so
+  // that is the profile; front and back keep the shoulders square instead.
+  const side = facing === 'left';
+  const back = facing === 'up';
+
   // Pose offsets. `lean` shifts the upper body forward, `lift` raises the torso.
-  const lunge = pose === 'attack' ? 3 : 0;
+  const lunge = pose === 'attack' && side ? 3 : 0;
   const bob = pose === 'idle' ? (frame ? 1 : 0) : 0;
   const guard = pose === 'guard' ? 2 : 0;
   const down = pose === 'down';
@@ -109,16 +121,26 @@ function paint(r, spec, pose, frame, flip) {
   r.rect(cx - 7 - lunge, armY + 8 - reach, 3, 3, skin);
 
   // --- head ---
-  const hx = cx - 1 - lunge;
+  const hx = side ? cx - 1 - lunge : cx;
   r.rect(hx - 3, headY, 7, 8, skin);
   r.rect(hx - 3, headY, 2, 8, skinLit);          // lit edge, ember side
   r.rect(hx + 3, headY, 1, 8, skinDark);
-  r.px(hx - 2, headY + 4, P.void);               // eye
-  r.px(hx - 3, headY + 6, skinDark);             // jaw shadow
+  if (back) {
+    // The back of a head is hair and neck. No face, which is the whole point.
+    r.rect(hx - 3, headY, 7, 6, mix(spec.hairColor ?? P.void, P.bark, 0.15));
+    r.rect(hx - 3, headY + 6, 7, 2, skinDark);
+  } else if (side) {
+    r.px(hx - 2, headY + 4, P.void);             // eye
+    r.px(hx - 3, headY + 6, skinDark);           // jaw shadow
+  } else {
+    r.px(hx - 2, headY + 4, P.void);             // both eyes, square on
+    r.px(hx + 2, headY + 4, P.void);
+    r.hline(hx - 1, headY + 6, 3, skinDark);     // mouth line
+  }
   r.rect(hx - 3, headY + 8, 7, 1, skinDark);     // neck shadow
 
-  hairFor(r, spec, hx, headY, accent, 0);
-  weaponFor(r, spec, cx, shoulderY, hipY, baseY, pose, accent, trim);
+  hairFor(r, spec, hx, headY, accent, 0, back);
+  weaponFor(r, spec, cx, shoulderY, hipY, baseY, pose, accent, trim, facing);
 }
 
 function legs(r, cx, hipY, baseY, trim, dark, stride) {
@@ -135,7 +157,7 @@ function legs(r, cx, hipY, baseY, trim, dark, stride) {
   r.rect(cx + 1 + Math.floor(stride / 2), baseY - 1, 5, 2, P.bark);
 }
 
-function hairFor(r, spec, hx, headY, accent, small) {
+function hairFor(r, spec, hx, headY, accent, small, back = false) {
   const hair = spec.hairColor ?? P.void;
   const sheen = mix(hair, P.barkLit, 0.5);
   switch (spec.hair) {
@@ -170,13 +192,18 @@ function hairFor(r, spec, hx, headY, accent, small) {
       r.ellipse(hx, headY, 5, 3, hair);
       break;
   }
-  if (!small) {
+  if (!small && !back) {
     // ember earring, the one saturated accent everyone wears
     r.px(hx + 3, headY + 5, accent);
   }
 }
 
-function weaponFor(r, spec, cx, shoulderY, hipY, baseY, pose, accent, trim) {
+function weaponFor(r, spec, cx, shoulderY, hipY, baseY, pose, accent, trim, facing = 'left') {
+  // Square on to the camera there is no room to swing anything across the body,
+  // so everything is carried upright at the side instead.
+  if (facing === 'down' || facing === 'up') {
+    return carried(r, spec, cx, shoulderY, baseY, accent, trim, facing === 'up');
+  }
   const attacking = pose === 'attack';
   switch (spec.weapon) {
     case 'spear': {
@@ -221,6 +248,37 @@ function weaponFor(r, spec, cx, shoulderY, hipY, baseY, pose, accent, trim) {
       r.px(sx + 1, shoulderY - 9, P.emberWhite);
       break;
     }
+    default: break;
+  }
+}
+
+
+/** Weapons as carried when a figure is square on to the camera. */
+function carried(r, spec, cx, shoulderY, baseY, accent, trim, back) {
+  const sx = back ? cx - 9 : cx + 8;
+  switch (spec.weapon) {
+    case 'spear':
+      r.rect(sx, shoulderY - 7, 2, baseY - shoulderY + 8, mix(trim, P.barkHi, 0.5));
+      r.poly([
+        [sx + 1, shoulderY - 13], [sx + 3, shoulderY - 8],
+        [sx + 1, shoulderY - 6], [sx - 1, shoulderY - 8],
+      ], P.emberBright);
+      r.px(sx + 1, shoulderY - 9, P.emberWhite);
+      break;
+    case 'staff':
+      r.rect(sx, shoulderY - 6, 2, baseY - shoulderY + 7, mix(trim, P.barkHi, 0.4));
+      r.circle(sx + 1, shoulderY - 8, 3, P.emberDeep);
+      r.circle(sx + 1, shoulderY - 8, 2, P.emberBright);
+      break;
+    case 'disc':
+      r.circle(sx + 1, shoulderY + 6, 4, P.emberDeep, { fill: false });
+      r.circle(sx + 1, shoulderY + 6, 2, P.emberBright, { fill: false });
+      r.px(sx + 1, shoulderY + 6, P.emberWhite);
+      break;
+    case 'fists':
+      r.rect(sx - 1, shoulderY + 8, 4, 4, P.boneLit);
+      r.hline(sx - 1, shoulderY + 9, 4, P.stoneMid);
+      break;
     default: break;
   }
 }
